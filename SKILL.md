@@ -53,6 +53,7 @@ rm -rf /tmp/fangyang-le
 8. 任务文件放 `/tmp/fangyang-<topic>-task.md`，不要把任务说明塞进 prompt 正文。
 9. **不跨 workspace 放羊。** 羊圈 tab/pane 一律建在主控自己的 `$HERDR_WORKSPACE_ID` 里；绝不用“当前 focus 所在”的 workspace（focus 可能停在别的控制方的羊圈上）。`fanout.sh` 默认锁定主控 workspace；只有用户明确要求跨界时才显式 `--workspace`。
 10. **子 agent 与主控同类。** Claude Code 起的羊就是 claude，OpenCode 起的羊就是 opencode：`--kind` 默认 `auto`，自动取主控自己的 kind。只有同类额度耗尽或用户点名要别的模型时，才显式换 kind，并在汇报时说明。
+11. **收割后保留羊圈。** 任务结束先不关 pane/tab，让用户随时点开羊圈查看每只羊的现场和产出；主控完成审查、统一验证、汇报之后，**提示用户羊圈还开着**，等用户确认审查完毕才关闭羊圈。绝不收割完就悄悄拆圈。
 
 ## 快速口令
 
@@ -64,8 +65,9 @@ rm -rf /tmp/fangyang-le
 4. 每个 pane `agent start`，kind 默认 `auto`（与主控同类：claude 起 claude、opencode 起 opencode）；仅当同类额度满或用户点名时才显式换 kind。
 5. 每个 agent `prompt` 指向自己的任务文件。
 6. 处理 `/tmp` 权限后等待。
-7. 从**同一个 workspace** 收割结果、关 pane、主控跑门禁。
-8. 汇报；用户明确要求时再提交。
+7. 从**同一个 workspace** 收割结果（**不带 `--close`，羊圈保留**），主控跑门禁。
+8. 汇报（含各羊完成情况），并提示用户：羊圈还开着，可自行查看。
+9. 用户确认审查完毕后，再关闭羊圈；用户明确要求时才 commit。
 
 ## Herdr 常用命令速查
 
@@ -354,12 +356,20 @@ worker-1 w7:pB  w7:t5  w7
 ...
 ```
 
-第 4 列记录这群羊所在的 workspace。收割时直接：
+第 4 列记录这群羊所在的 workspace。收割时直接（**不带 `--close`，羊圈保留待审**）：
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
   --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
-  --wait 1800000 --close
+  --wait 1800000
+```
+
+审查完毕、用户确认后再关整圈：
+
+```bash
+"$SKILL_DIR/scripts/harvest.sh" \
+  --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
+  --close-tab
 ```
 
 命名建议直接用任务名，例如 `lsp-tool`、`ui-persist`、`rust-1`。`--tasks` 会按逗号拆分并作为 agent 名字，不要全叫 `worker-1`。
@@ -436,6 +446,8 @@ herdr agent read worker-a --source visible
 - 是否把无关文件格式化了
 - 有没有未完成项
 
+**收割 ≠ 拆圈。** `harvest.sh` 不带 `--close` 时只读输出、不动 pane——羊圈原样保留，用户随时可以点开 tab 查看每只羊的现场。主控完成审查和验证后，在汇报里明确提示"羊圈还开着"，等用户确认审查完毕再执行关闭。
+
 ## 7. 主控统一验证
 
 不要只相信 agent 的“测试通过”。主控至少跑：
@@ -471,15 +483,29 @@ git checkout -- <unrelated-files>
 
 只保留任务 scope 内的 diff。
 
-## 8. 关闭 pane
+## 8. 关闭羊圈（审查完毕后）
 
-完成后：
+关闭的时机：**主控已汇报、用户已查看并确认审查完毕**。不是收割完就关。
+
+汇报时提示用户（示例话术）：
+
+> 羊圈「主控的羊圈 · P2 补齐」还开着，你可以点开 herdr 里这个 tab 查看每只羊的现场和产出。确认没问题后我就把圈关掉；要保留也行，说一声即可。
+
+用户确认后，整圈一次关掉（推荐，manifest 第 3 列就是 tab id）：
+
+```bash
+"$SKILL_DIR/scripts/harvest.sh" --manifest /tmp/herdr-<label>-agents.tsv --close-tab
+# 或手工
+herdr tab close <tab-id>
+```
+
+只想关单个 pane：
 
 ```bash
 herdr pane close <pane-id>
 ```
 
-确认没有 agent 还在 working 再关。
+确认没有 agent 还在 working 再关（`--close-tab`/`--close` 遇 working 会自动跳过并提示）。
 
 ## 9. 提交
 

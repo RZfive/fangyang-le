@@ -82,12 +82,20 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
 新 tab 名称类似 `主控的羊圈 · P2 补齐`，每个 agent 名字是 `lsp`、`ui`、`bench`、`docs`。
 
-收割（从同一个 workspace；不一致会警告 cross-workspace harvest）：
+收割（从同一个 workspace；不一致会警告 cross-workspace harvest）。**默认保留羊圈**，方便用户点开查看每只羊的现场：
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
   --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
-  --wait 1800000 --close
+  --wait 1800000
+```
+
+主控汇报、用户审查确认后，再关整圈：
+
+```bash
+"$SKILL_DIR/scripts/harvest.sh" \
+  --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
+  --close-tab
 ```
 
 ## 卸载

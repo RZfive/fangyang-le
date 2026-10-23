@@ -175,14 +175,16 @@ fi
 
 cat <<EOF
 
-Harvest with:
-  "$SCRIPT_DIR/harvest.sh" --manifest "$MANIFEST" --wait 1800000 --close
+Harvest with (flock stays open for review):
+  "$SCRIPT_DIR/harvest.sh" --manifest "$MANIFEST" --wait 1800000
+
+After the user has reviewed and confirmed, close the whole fold:
+  "$SCRIPT_DIR/harvest.sh" --manifest "$MANIFEST" --close-tab
 
 Next:
   herdr agent prompt ${FIRST_NAME} "Read /tmp/task-1.md and execute it exactly. Stay in scope. Do not commit."
   herdr agent wait ${FIRST_NAME} --until idle --until done --until blocked --timeout 1800000
   herdr agent read ${FIRST_NAME} --lines 160
-  herdr pane close <pane-id>
 
 If an agent is blocked on /tmp permission:
   herdr agent send-keys ${FIRST_NAME} right enter
