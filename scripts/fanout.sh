@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 COUNT=4
-KIND=opencode
+KIND=auto
 LABEL=""
 CWD="$PWD"
 PREFIX="worker"
@@ -12,7 +12,7 @@ OWNER="主控"
 WORK=""
 TASKS=""
 FOCUS=0
-WORKSPACE="${HERDR_WORKSPACE:-}"
+WORKSPACE="${HERDR_WORKSPACE_ID:-}"
 
 usage() {
   cat <<'EOF'
@@ -22,7 +22,8 @@ Create a herdr tab with a 2-row agent grid and start agents in every pane.
 
 Options:
   --count N        Number of agents, 2-8 (default: 4)
-  --kind KIND      herdr agent kind, e.g. codex, claude, opencode (default: opencode)
+  --kind KIND      Agent kind; "auto" = same kind as this pane's agent,
+                   e.g. claude spawns claude, opencode spawns opencode (default: auto)
   --label LABEL    Tab label (default: "<owner>的羊圈 · <work>")
   --owner NAME     Who owns this sheepfold (default: 主控)
   --work TEXT      What the group is working on (default: 并行任务)
@@ -30,7 +31,9 @@ Options:
   --cwd PATH       Working directory for the tab (default: current directory)
   --prefix NAME    Fallback agent name prefix (default: worker)
   --focus          Focus the new tab after creation
-  --workspace ID   herdr workspace id (default: focused workspace)
+  --workspace ID   herdr workspace id (default: this pane's $HERDR_WORKSPACE_ID;
+                   passing a different id is a deliberate cross-workspace override
+                   and prints a warning)
   -h, --help       Show this help
 EOF
 }
@@ -81,16 +84,43 @@ for key in sys.argv[1:]:
 print(cur)' "$@"
 }
 
+# Rule 1: sheep stay in the controller's own workspace.
+# Never fall back to the "focused" workspace — focus may point at another
+# controller's sheepfold, which would silently cross workspaces.
 if [[ -z "$WORKSPACE" ]]; then
-  WORKSPACE="$(herdr workspace list | python3 -c 'import json,sys
-obj=json.load(sys.stdin)
-for ws in obj["result"]["workspaces"]:
-    if ws.get("focused"):
-        print(ws["workspace_id"]); break')"
+  if [[ -z "${HERDR_WORKSPACE_ID:-}" ]]; then
+    echo "Not running inside a herdr pane (HERDR_WORKSPACE_ID is unset)." >&2
+    echo "Run fanout.sh from the controller's pane so sheep land in the same workspace." >&2
+    echo "Only pass --workspace explicitly when crossing workspaces is truly intended." >&2
+    exit 2
+  fi
+  WORKSPACE="$HERDR_WORKSPACE_ID"
 fi
-if [[ -z "$WORKSPACE" ]]; then
-  echo "Could not determine focused herdr workspace. Pass --workspace." >&2
-  exit 2
+if [[ -n "${HERDR_WORKSPACE_ID:-}" && "$WORKSPACE" != "$HERDR_WORKSPACE_ID" ]]; then
+  echo "WARNING: --workspace '$WORKSPACE' differs from this pane's workspace '$HERDR_WORKSPACE_ID'." >&2
+  echo "WARNING: cross-workspace fanout — these sheep will NOT stay in the controller's workspace." >&2
+fi
+
+# Rule 2: spawn the same agent kind as the controller.
+# claude spawns claude, opencode spawns opencode, codex spawns codex.
+KIND_AUTO=0
+if [[ -z "$KIND" || "$KIND" == "auto" ]]; then
+  KIND_AUTO=1
+  SELF_KIND=""
+  if [[ -n "${HERDR_PANE_ID:-}" ]]; then
+    SELF_KIND="$(herdr agent get "$HERDR_PANE_ID" 2>/dev/null | python3 -c 'import json,sys
+try:
+    a = json.load(sys.stdin)["result"]["agent"]
+    print(a.get("agent") or a.get("agent_kind") or "")
+except Exception:
+    print("")' || true)"
+  fi
+  if [[ -z "$SELF_KIND" ]]; then
+    echo "Could not detect this pane's agent kind (is the controller a recognized herdr agent?)." >&2
+    echo "Pass --kind explicitly, e.g. --kind claude / --kind opencode / --kind codex." >&2
+    exit 2
+  fi
+  KIND="$SELF_KIND"
 fi
 
 FOCUS_FLAG="--no-focus"
@@ -114,8 +144,11 @@ for ((i = 0; i < BOTTOM_NEEDED; i++)); do
   PANES+=("$NEXT")
 done
 
-printf 'name\tpane\ttab\n' > "$MANIFEST"
+printf 'name\tpane\ttab\tworkspace\n' > "$MANIFEST"
+KIND_SRC="explicit"
+if (( KIND_AUTO )); then KIND_SRC="same as controller"; fi
 echo "workspace: $WORKSPACE"
+echo "kind:      $KIND ($KIND_SRC)"
 echo "tab:       $LABEL ($TAB_ID)"
 echo "manifest:  $MANIFEST"
 echo "agents:"
@@ -129,7 +162,7 @@ for ((i = 0; i < COUNT; i++)); do
   PANE="${PANES[$i]}"
   if herdr agent start "$NAME" --kind "$KIND" --pane "$PANE" --timeout 120000 >/dev/null; then
     printf '  %-20s %s\n' "$NAME" "$PANE"
-    printf '%s\t%s\t%s\n' "$NAME" "$PANE" "$TAB_ID" >> "$MANIFEST"
+    printf '%s\t%s\t%s\t%s\n' "$NAME" "$PANE" "$TAB_ID" "$WORKSPACE" >> "$MANIFEST"
   else
     printf '  %-20s %s  (start failed)\n' "$NAME" "$PANE" >&2
   fi

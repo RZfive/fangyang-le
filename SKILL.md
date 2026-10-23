@@ -51,6 +51,8 @@ rm -rf /tmp/fangyang-le
 6. **主控统一跑全量验证后再提交。**
 7. **只有用户明确说“提交”时才 commit。**
 8. 任务文件放 `/tmp/fangyang-<topic>-task.md`，不要把任务说明塞进 prompt 正文。
+9. **不跨 workspace 放羊。** 羊圈 tab/pane 一律建在主控自己的 `$HERDR_WORKSPACE_ID` 里；绝不用“当前 focus 所在”的 workspace（focus 可能停在别的控制方的羊圈上）。`fanout.sh` 默认锁定主控 workspace；只有用户明确要求跨界时才显式 `--workspace`。
+10. **子 agent 与主控同类。** Claude Code 起的羊就是 claude，OpenCode 起的羊就是 opencode：`--kind` 默认 `auto`，自动取主控自己的 kind。只有同类额度耗尽或用户点名要别的模型时，才显式换 kind，并在汇报时说明。
 
 ## 快速口令
 
@@ -58,11 +60,11 @@ rm -rf /tmp/fangyang-le
 
 1. 先调查代码，列 2–6 个独立 workstream。
 2. 给每个 workstream 写 `/tmp/<name>-task.md`。
-3. 新建 herdr tab + 网格 pane。
-4. 每个 pane `agent start`，kind 优先 `codex`，额度满就 `claude` / `opencode`。
+3. 在**主控自己的 workspace**（`$HERDR_WORKSPACE_ID`）里新建 herdr tab + 网格 pane。
+4. 每个 pane `agent start`，kind 默认 `auto`（与主控同类：claude 起 claude、opencode 起 opencode）；仅当同类额度满或用户点名时才显式换 kind。
 5. 每个 agent `prompt` 指向自己的任务文件。
 6. 处理 `/tmp` 权限后等待。
-7. 收割结果、关 pane、主控跑门禁。
+7. 从**同一个 workspace** 收割结果、关 pane、主控跑门禁。
 8. 汇报；用户明确要求时再提交。
 
 ## Herdr 常用命令速查
@@ -218,19 +220,18 @@ Do not commit. Report changed files, tests, and gaps.
 
 推荐布局：主控在左，右侧 2×N 网格。
 
-用脚本快速开：
+用脚本快速开（`--kind` 省略时默认 `auto`，与主控同类）：
 
 ```bash
 "$SKILL_DIR/scripts/fanout.sh" \
   --count 6 \
-  --kind opencode \
   --owner 主控 \
   --work "P2 补齐" \
   --tasks lsp,ui,bench,docs,rust,python \
   --cwd "$PWD"
 ```
 
-脚本会创建 tab、网格 pane、启动 agent，并打印每个 agent 的名字和 pane id。
+脚本会创建 tab、网格 pane、启动 agent，并打印每个 agent 的名字和 pane id。羊圈建在主控自己的 `$HERDR_WORKSPACE_ID` 里，不跨 workspace；不在 herdr pane 里执行会直接报错。
 
 主控留在原 tab；新 tab 的标签默认是：
 
@@ -274,10 +275,16 @@ herdr agent start --help
 
 选择顺序：
 
-1. Codex 有额度 → `codex`
-2. Codex 满 → `claude`
-3. Claude 也满/不可用 → `opencode`
-4. 需要不同模型时混用，但同一文件仍只能一个 owner
+1. 默认 `--kind auto`：与主控同类。claude 起 claude，opencode 起 opencode，codex 起 codex——同种 agent 的行为、权限、配置最一致
+2. 同类额度耗尽 → 按用户偏好降级到 `claude` / `opencode`，并在汇报时说明用了什么 kind
+3. 需要不同模型能力时混用，但同一文件仍只能一个 owner
+
+Workspace 纪律：
+
+1. 羊圈 tab、所有 pane、所有 agent 都建在主控自己的 `$HERDR_WORKSPACE_ID`
+2. `fanout.sh` 不带 `--workspace` 时自动锁定主控 workspace；不在 herdr pane 里（环境变量缺失）会直接报错，而不是猜一个
+3. 显式 `--workspace` 与主控 workspace 不同时会打 WARNING——仅限用户明确要求跨界时使用
+4. `harvest.sh` 发现 manifest 记录的 workspace 与当前 shell 不一致时会警告跨 workspace 收割，应回到起羊的 workspace 重新收割
 
 ### 网格怎么摆
 
@@ -342,12 +349,12 @@ herdr pane current
 
 ```text
 /tmp/herdr-<label>-agents.tsv
-name    pane    tab
-worker-1 w7:pB  w7:t5
+name    pane    tab    workspace
+worker-1 w7:pB  w7:t5  w7
 ...
 ```
 
-收割时直接：
+第 4 列记录这群羊所在的 workspace。收割时直接：
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
@@ -517,6 +524,9 @@ git commit -m "<type>(<scope>): <summary>"
 | 两个 agent 改同一文件 | 立刻停一个，主控接管该文件 |
 | cargo file lock 等待 | 正常，让它们排队；不要并行跑同一 target 的重型构建 |
 | agent 格式化无关文件 | 主控 revert 无关文件，只保留 scope 内 diff |
+| `fanout.sh` 报 `HERDR_WORKSPACE_ID is unset` | 不在 herdr pane 里跑脚本了；回到主控 pane 执行，或仅在用户明确要求跨界时传 `--workspace` |
+| `fanout.sh` 报检测不到 agent kind | 控制方 pane 不是已注册 agent，或无 `$HERDR_PANE_ID`；显式传 `--kind claude / opencode / codex` |
+| `harvest.sh` 警告 cross-workspace harvest | 当前 shell 与起羊时的 workspace 不一致；`echo $HERDR_WORKSPACE_ID` 确认后，回到原 workspace 重新收割 |
 
 ## 一句话
 
