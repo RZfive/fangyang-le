@@ -13,6 +13,7 @@ WORK=""
 TASKS=""
 FOCUS=0
 WORKSPACE="${HERDR_WORKSPACE_ID:-}"
+TASKS_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -29,6 +30,9 @@ Options:
   --work TEXT      What the group is working on (default: 并行任务)
   --tasks LIST     Comma-separated agent names, e.g. lsp,ui,bench
   --cwd PATH       Working directory for the tab (default: current directory)
+  --tasks-dir PATH Directory for task files + manifest (default: <cwd>/.fangyang).
+                   Keeping task files inside the repo avoids per-agent /tmp permission
+                   prompts; the directory is auto-added to .gitignore when possible.
   --prefix NAME    Fallback agent name prefix (default: worker)
   --focus          Focus the new tab after creation
   --workspace ID   herdr workspace id (default: this pane's $HERDR_WORKSPACE_ID;
@@ -47,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --work) WORK="$2"; shift 2 ;;
     --tasks) TASKS="$2"; shift 2 ;;
     --cwd) CWD="$2"; shift 2 ;;
+    --tasks-dir) TASKS_DIR="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     --focus) FOCUS=1; shift ;;
     --workspace) WORKSPACE="$2"; shift 2 ;;
@@ -123,12 +128,24 @@ except Exception:
   KIND="$SELF_KIND"
 fi
 
+# Rule 3: task files live INSIDE the repo (cwd), not /tmp.
+# Agents prompt for permission on paths outside their cwd; keeping task files
+# under <cwd>/.fangyang makes fanout painless to start — zero permission dialogs.
+if [[ -z "$TASKS_DIR" ]]; then
+  TASKS_DIR="$CWD/.fangyang"
+fi
+mkdir -p "$TASKS_DIR"
+if [[ -d "$CWD/.git" ]] && ! grep -qs '^\.fangyang/$' "$CWD/.gitignore" 2>/dev/null; then
+  printf '\n# fangyang (放羊) task files and manifests\n.fangyang/\n' >> "$CWD/.gitignore"
+  echo "gitignore: added .fangyang/ to $CWD/.gitignore"
+fi
+
+MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-agents.tsv"
 FOCUS_FLAG="--no-focus"
 if (( FOCUS == 1 )); then FOCUS_FLAG="--focus"; fi
 TAB_JSON="$(herdr tab create --workspace "$WORKSPACE" --cwd "$CWD" --label "$LABEL" "$FOCUS_FLAG")"
 ROOT_PANE="$(printf '%s' "$TAB_JSON" | json_get result root_pane pane_id)"
 TAB_ID="$(printf '%s' "$TAB_JSON" | json_get result tab tab_id)"
-MANIFEST="/tmp/herdr-${LABEL// /_}-agents.tsv"
 
 COLS=$(( (COUNT + 1) / 2 ))
 TOP_PANES=("$ROOT_PANE")
@@ -151,6 +168,7 @@ echo "workspace: $WORKSPACE"
 echo "kind:      $KIND ($KIND_SRC)"
 echo "tab:       $LABEL ($TAB_ID)"
 echo "manifest:  $MANIFEST"
+echo "tasks:     write per-agent task files to $TASKS_DIR/<name>-task.md (repo-relative; avoids /tmp permission prompts)"
 echo "agents:"
 
 for ((i = 0; i < COUNT; i++)); do
@@ -173,6 +191,13 @@ if (( ${#TASK_NAMES[@]} > 0 )); then
   FIRST_NAME="${TASK_NAMES[0]// /-}"
 fi
 
+# Path referenced in the first-sheep prompt: repo-relative when the tasks dir
+# lives under --cwd (cleaner prompt), absolute otherwise (still unambiguous).
+FIRST_TASK_FILE="$TASKS_DIR/${FIRST_NAME}-task.md"
+case "$FIRST_TASK_FILE" in
+  "$CWD"/*) FIRST_TASK_FILE="${FIRST_TASK_FILE#"$CWD"/}" ;;
+esac
+
 cat <<EOF
 
 Harvest with (flock stays open for review):
@@ -182,11 +207,12 @@ After the user has reviewed and confirmed, close the whole fold:
   "$SCRIPT_DIR/harvest.sh" --manifest "$MANIFEST" --close-tab
 
 Next:
-  herdr agent prompt ${FIRST_NAME} "Read /tmp/task-1.md and execute it exactly. Stay in scope. Do not commit."
+  herdr agent prompt ${FIRST_NAME} "Read ${FIRST_TASK_FILE} and execute it exactly. Stay in scope. Do not commit."
   herdr agent wait ${FIRST_NAME} --until idle --until done --until blocked --timeout 1800000
   herdr agent read ${FIRST_NAME} --lines 160
 
-If an agent is blocked on /tmp permission:
+If an agent still hits an external-directory permission prompt (only when task
+files were placed outside the repo, e.g. /tmp):
   herdr agent send-keys ${FIRST_NAME} right enter
   herdr agent send-keys ${FIRST_NAME} enter
 EOF

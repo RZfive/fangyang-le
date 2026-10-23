@@ -50,7 +50,7 @@ rm -rf /tmp/fangyang-le
 5. **agent 不 commit、不 push、不擅自扩大 scope。**
 6. **主控统一跑全量验证后再提交。**
 7. **只有用户明确说“提交”时才 commit。**
-8. 任务文件放 `/tmp/fangyang-<topic>-task.md`，不要把任务说明塞进 prompt 正文。
+8. 任务文件放**仓库内** `$PWD/.fangyang/<name>-task.md`（`fanout.sh` 自动建目录并加入 `.gitignore`），不要放 `/tmp`——cwd 外读取会触发每个 agent 的授权弹窗；也不要把任务说明塞进 prompt 正文。
 9. **不跨 workspace 放羊。** 羊圈 tab/pane 一律建在主控自己的 `$HERDR_WORKSPACE_ID` 里；绝不用“当前 focus 所在”的 workspace（focus 可能停在别的控制方的羊圈上）。`fanout.sh` 默认锁定主控 workspace；只有用户明确要求跨界时才显式 `--workspace`。
 10. **子 agent 与主控同类。** Claude Code 起的羊就是 claude，OpenCode 起的羊就是 opencode：`--kind` 默认 `auto`，自动取主控自己的 kind。只有同类额度耗尽或用户点名要别的模型时，才显式换 kind，并在汇报时说明。
 11. **收割后保留羊圈。** 任务结束先不关 pane/tab，让用户随时点开羊圈查看每只羊的现场和产出；主控完成审查、统一验证、汇报之后，**提示用户羊圈还开着**，等用户确认审查完毕才关闭羊圈。绝不收割完就悄悄拆圈。
@@ -60,11 +60,11 @@ rm -rf /tmp/fangyang-le
 用户说“放羊”或“并发做”时，按这个顺序执行：
 
 1. 先调查代码，列 2–6 个独立 workstream。
-2. 给每个 workstream 写 `/tmp/<name>-task.md`。
+2. 给每个 workstream 写 `$PWD/.fangyang/<name>-task.md`（仓库内，羊读它不需要授权）。
 3. 在**主控自己的 workspace**（`$HERDR_WORKSPACE_ID`）里新建 herdr tab + 网格 pane。
 4. 每个 pane `agent start`，kind 默认 `auto`（与主控同类：claude 起 claude、opencode 起 opencode）；仅当同类额度满或用户点名时才显式换 kind。
 5. 每个 agent `prompt` 指向自己的任务文件。
-6. 处理 `/tmp` 权限后等待。
+6. 派发后等待；任务文件在仓库内时通常全程无授权弹窗。
 7. 从**同一个 workspace** 收割结果（**不带 `--close`，羊圈保留**），主控跑门禁。
 8. 汇报（含各羊完成情况），并提示用户：羊圈还开着，可自行查看。
 9. 用户确认审查完毕后，再关闭羊圈；用户明确要求时才 commit。
@@ -129,8 +129,8 @@ herdr pane close <pane-id>
 # 在已有 shell pane 启动 agent
 herdr agent start <name> --kind <codex|claude|opencode|gemini|...> --pane <pane-id> --timeout 120000
 
-# 派发任务
-herdr agent prompt <name> "Read /tmp/task.md and execute it exactly. Stay in scope. Do not commit."
+# 派发任务（任务文件在仓库 .fangyang/ 内，读取无需授权）
+herdr agent prompt <name> "Read .fangyang/task.md and execute it exactly. Stay in scope. Do not commit."
 
 # 等待完成
 herdr agent wait <name> --until idle --until done --until blocked --timeout 1800000
@@ -139,7 +139,7 @@ herdr agent wait <name> --until idle --until done --until blocked --timeout 1800
 herdr agent read <name> --lines 160
 herdr agent read <name> --source visible   # working/blocked 时看当前屏幕
 
-# 处理权限（Always allow）
+# 权限兜底：仅当仍触发授权弹窗时（Always allow）
 herdr agent send-keys <name> right enter
 herdr agent send-keys <name> enter
 
@@ -180,11 +180,14 @@ herdr tab list --workspace <workspace>
 
 ## 2. 写任务文件
 
-复制模板：
+复制模板（落到仓库内 `.fangyang/` 目录，子 agent 读取时**不会触发授权弹窗**）：
 
 ```bash
-cp "$SKILL_DIR/templates/task.md" /tmp/my-task.md
+mkdir -p "$PWD/.fangyang"
+cp "$SKILL_DIR/templates/task.md" "$PWD/.fangyang/<name>-task.md"
 ```
+
+fanout.sh 也会自动创建 `.fangyang/` 并把 manifest 写在里面，同时在 `.gitignore` 里幂等追加 `.fangyang/`（不会误提交任务文件）。
 
 必须包含：
 
@@ -347,10 +350,10 @@ herdr pane current
 
 **从脚本视角：**
 
-`fanout.sh` 会写 manifest：
+`fanout.sh` 会写 manifest（落在 `$PWD/.fangyang/`，主控读写无需授权）：
 
 ```text
-/tmp/herdr-<label>-agents.tsv
+.fangyang/herdr-<label>-agents.tsv
 name    pane    tab    workspace
 worker-1 w7:pB  w7:t5  w7
 ...
@@ -360,7 +363,7 @@ worker-1 w7:pB  w7:t5  w7
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
-  --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
+  --manifest .fangyang/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
   --wait 1800000
 ```
 
@@ -368,7 +371,7 @@ worker-1 w7:pB  w7:t5  w7
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
-  --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
+  --manifest .fangyang/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
   --close-tab
 ```
 
@@ -378,21 +381,21 @@ worker-1 w7:pB  w7:t5  w7
 
 ```bash
 herdr agent prompt worker-a \
-  "Read /tmp/my-task-a.md and execute it exactly. Stay strictly within the listed write scope. Do not commit. Run every acceptance command and report changed files, tests, and gaps."
+  "Read .fangyang/my-task-a.md and execute it exactly. Stay strictly within the listed write scope. Do not commit. Run every acceptance command and report changed files, tests, and gaps."
 ```
 
 一次派发所有 agent；不要等第一只完成再派第二只。
 
 ## 5. 权限卡住怎么办
 
-新 agent 读 `/tmp` 时常见：
+任务文件和 manifest 都已放在仓库内 `.fangyang/`，正常流程**不会**触发目录授权弹窗。仅当 agent 去读仓库外的路径（如 `/tmp`、`~/Downloads`）时才可能出现：
 
 ```text
 Permission required: Access external directory /tmp
 Allow once | Allow always | Reject
 ```
 
-处理：
+处理（兜底手段，不要预先批量发）：
 
 ```bash
 # 选中 Always allow
@@ -494,7 +497,7 @@ git checkout -- <unrelated-files>
 用户确认后，整圈一次关掉（推荐，manifest 第 3 列就是 tab id）：
 
 ```bash
-"$SKILL_DIR/scripts/harvest.sh" --manifest /tmp/herdr-<label>-agents.tsv --close-tab
+"$SKILL_DIR/scripts/harvest.sh" --manifest .fangyang/herdr-<label>-agents.tsv --close-tab
 # 或手工
 herdr tab close <tab-id>
 ```

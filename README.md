@@ -78,7 +78,7 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
 - **不跨 workspace**：羊圈 tab/pane 建在主控自己的 `$HERDR_WORKSPACE_ID` 里；不在 herdr pane 里执行会报错，绝不猜。只有用户明确要求跨界时才传 `--workspace`（此时会打 WARNING）。
 - **子 agent 与主控同类**：`--kind` 默认 `auto`——claude 起 claude、opencode 起 opencode、codex 起 codex。同类额度满或用户点名时才显式 `--kind <kind>`。
-- **manifest 记录 workspace**：`/tmp/herdr-<label>-agents.tsv` 每行 4 列 `name/pane/tab/workspace`，收割时会校验。
+- **manifest 记录 workspace**：`.fangyang/herdr-<label>-agents.tsv`（落在当前仓库内，主控读写无需授权；fanout.sh 自动建目录并幂等追加 `.gitignore`）每行 4 列 `name/pane/tab/workspace`，收割时会校验。
 
 新 tab 名称类似 `主控的羊圈 · P2 补齐`，每个 agent 名字是 `lsp`、`ui`、`bench`、`docs`。
 
@@ -86,7 +86,7 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
-  --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
+  --manifest .fangyang/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
   --wait 1800000
 ```
 
@@ -94,7 +94,7 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
-  --manifest /tmp/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
+  --manifest .fangyang/herdr-主控的羊圈_·_P2_补齐-agents.tsv \
   --close-tab
 ```
 
