@@ -139,6 +139,7 @@ fi
 if (( CLOSE_TAB == 1 )); then
   if [[ -z "$MANIFEST" ]]; then
     echo "--close-tab needs --manifest (no tab ids available)" >&2
+    exit 2
   elif (( ANY_WORKING == 1 )); then
     echo "skip close-tab: at least one agent is still working" >&2
   else
