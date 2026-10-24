@@ -20,7 +20,9 @@ Options:
   --manifest P   Read agent names from a fanout manifest (tab-separated; column 4 = workspace)
   --close        Close each agent's pane after reading (use after review; panes stay open by default)
   --close-tab    Close the whole sheepfold tab(s) from the manifest after reading
-                 (use only after the user has reviewed and confirmed)
+                 (use only after the user has reviewed and confirmed); also
+                 restores the controller tab's original label recorded by fanout
+                 (#controller_tab_* metadata; old manifests without it are skipped)
   -h, --help     Show this help
 EOF
 }
@@ -46,6 +48,7 @@ if [[ -n "$MANIFEST" ]]; then
   fi
   while IFS=$'\t' read -r name pane tab ws; do
     [[ -z "$name" || "$name" == "name" ]] && continue
+    [[ "$name" == \#* ]] && continue   # fanout metadata (#controller_tab_*=...)
     AGENTS+=("$name")
     [[ -n "${ws:-}" ]] && MANIFEST_WS_DATA="${MANIFEST_WS_DATA}${name}"$'\t'"${ws}"$'\n'
   done < "$MANIFEST"
@@ -68,6 +71,12 @@ print(cur)' "$@"
 manifest_ws() {
   # workspace recorded in the fanout manifest for an agent name (bash-3.2 safe lookup)
   printf '%s' "$MANIFEST_WS_DATA" | awk -F'\t' -v n="$1" '$1==n{print $2; exit}'
+}
+
+manifest_meta() {
+  # fanout metadata value: manifest_meta controller_tab_label reads "#controller_tab_label=<value>"
+  [[ -n "${MANIFEST:-}" ]] || return 0
+  sed -n "s/^#$1=//p" "$MANIFEST" | head -n 1
 }
 
 ANY_WORKING=0
@@ -150,5 +159,15 @@ if (( CLOSE_TAB == 1 )); then
         echo "warn: could not close tab $t" >&2
       fi
     done
+    # Restore the controller tab's original label (renamed by fanout).
+    ctrl_id="$(manifest_meta controller_tab_id)"
+    ctrl_label="$(manifest_meta controller_tab_label)"
+    if [[ -n "$ctrl_id" && -n "$ctrl_label" ]]; then
+      if herdr tab rename "$ctrl_id" "$ctrl_label" >/dev/null 2>&1; then
+        echo "restored controller tab label: $ctrl_id -> '$ctrl_label'"
+      else
+        echo "warn: closed the fold but could not restore controller tab $ctrl_id label '$ctrl_label'" >&2
+      fi
+    fi
   fi
 fi

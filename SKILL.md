@@ -246,6 +246,8 @@ Do not commit. Report changed files, tests, and gaps.
 
 例如：`主控的羊圈 · P2 补齐`。人可以直接在 herdr 的 tab 列表里看到“谁在带哪群羊、干什么活”。
 
+同时 `fanout.sh` 会把**主控自己的 tab** 同步改名为 `<owner> · <work>`（如 `主控 · P2 补齐`），原名写入 manifest 元数据；`harvest.sh --close-tab` 关圈时自动恢复。多个主控并行时，谁的 tab 对应哪个羊圈一眼可辨。改名失败或不在 herdr pane 里时只降级提示，不影响放羊。
+
 查看 tab：
 
 ```bash
@@ -354,12 +356,14 @@ herdr pane current
 
 ```text
 .fangyang/herdr-<label>-agents.tsv
+#controller_tab_id=w7:t3
+#controller_tab_label=1
 name    pane    tab    workspace
 worker-1 w7:pB  w7:t5  w7
 ...
 ```
 
-第 4 列记录这群羊所在的 workspace。收割时直接（**不带 `--close`，羊圈保留待审**）：
+第 4 列记录这群羊所在的 workspace；`#` 开头是元数据行（主控 tab 配对信息），`harvest.sh` 读 agent 时会跳过，`--close-tab` 用它恢复主控 tab 原名——旧 manifest 没有这些行也能正常收割。收割时直接（**不带 `--close`，羊圈保留待审**）：
 
 ```bash
 "$SKILL_DIR/scripts/harvest.sh" \
@@ -508,7 +512,7 @@ herdr tab close <tab-id>
 herdr pane close <pane-id>
 ```
 
-确认没有 agent 还在 working 再关（`--close-tab`/`--close` 遇 working 会自动跳过并提示）。
+确认没有 agent 还在 working 再关（`--close-tab`/`--close` 遇 working 会自动跳过并提示）。`--close-tab` 关圈后还会按 manifest 里的 `#controller_tab_*` 元数据把主控 tab 恢复为放羊前的原名。
 
 ## 9. 提交
 
@@ -535,8 +539,9 @@ git commit -m "<type>(<scope>): <summary>"
 
 ## 脚本
 
-- `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent
-- `scripts/harvest.sh`：查看状态、等待、读取最终输出、可选关闭 pane
+- `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent；同步把主控 tab 改名 `<owner> · <work>`
+- `scripts/harvest.sh`：查看状态、等待、读取最终输出、可选关闭 pane；`--close-tab` 关圈时恢复主控 tab 原名
+- `tests/run-tests.sh`：离线 stub 测试（伪 herdr CLI），覆盖 fanout/harvest 的主控 tab 配对行为
 - `install.sh`：安装到 `~/.agents/skills/fangyang-le` 并链接到 agent skill 目录
 - `bootstrap.sh`：从 GitHub 克隆后自动安装
 - `uninstall.sh`：卸载

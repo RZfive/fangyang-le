@@ -25,7 +25,10 @@ Options:
   --count N        Number of agents, 2-8 (default: 4)
   --kind KIND      Agent kind; "auto" = same kind as this pane's agent,
                    e.g. claude spawns claude, opencode spawns opencode (default: auto)
-  --label LABEL    Tab label (default: "<owner>的羊圈 · <work>")
+  --label LABEL    Tab label (default: "<owner>的羊圈 · <work>"); the controller's
+                   own tab is renamed to "<owner> · <work>" to pair with it
+                   (the original label is recorded in the manifest and restored
+                   by harvest --close-tab)
   --owner NAME     Who owns this sheepfold (default: 主控)
   --work TEXT      What the group is working on (default: 并行任务)
   --tasks LIST     Comma-separated agent names, e.g. lsp,ui,bench
@@ -146,6 +149,28 @@ if (( FOCUS == 1 )); then FOCUS_FLAG="--focus"; fi
 TAB_JSON="$(herdr tab create --workspace "$WORKSPACE" --cwd "$CWD" --label "$LABEL" "$FOCUS_FLAG")"
 ROOT_PANE="$(printf '%s' "$TAB_JSON" | json_get result root_pane pane_id)"
 TAB_ID="$(printf '%s' "$TAB_JSON" | json_get result tab tab_id)"
+# Rule 4: pair the controller's tab with its sheepfold.
+# The pen is labeled "<owner>的羊圈 · <work>" while the controller's own tab
+# keeps a default label ("1", "3", ...), so with several controllers running,
+# folds cannot be matched to their owners. Rename the controller's tab to
+# "<owner> · <work>" here; the original label is stored in the manifest as
+# "#controller_tab_*" metadata so harvest --close-tab can restore it.
+CTRL_TAB_ORIG=""
+CTRL_RENAMED=0
+CTRL_TAB_META_ID=""
+CTRL_TAB_META_LABEL=""
+if [[ -n "${HERDR_TAB_ID:-}" ]]; then
+  CTRL_TAB_ORIG="$(herdr tab get "$HERDR_TAB_ID" 2>/dev/null | json_get result tab label 2>/dev/null || true)"
+  if [[ -n "$CTRL_TAB_ORIG" ]]; then
+    if herdr tab rename "$HERDR_TAB_ID" "${OWNER} · ${WORK}" >/dev/null 2>&1; then
+      CTRL_RENAMED=1
+      CTRL_TAB_META_ID="#controller_tab_id=${HERDR_TAB_ID}"
+      CTRL_TAB_META_LABEL="#controller_tab_label=${CTRL_TAB_ORIG}"
+    else
+      echo "warn: fold opened, but could not rename controller tab ${HERDR_TAB_ID}" >&2
+    fi
+  fi
+fi
 
 COLS=$(( (COUNT + 1) / 2 ))
 TOP_PANES=("$ROOT_PANE")
@@ -162,11 +187,20 @@ for ((i = 0; i < BOTTOM_NEEDED; i++)); do
 done
 
 printf 'name\tpane\ttab\tworkspace\n' > "$MANIFEST"
+# "#"-prefixed metadata lines are ignored by harvest's TSV parser.
+if [[ -n "$CTRL_TAB_META_ID" ]]; then
+  printf '%s\n%s\n' "$CTRL_TAB_META_ID" "$CTRL_TAB_META_LABEL" >> "$MANIFEST"
+fi
+
 KIND_SRC="explicit"
 if (( KIND_AUTO )); then KIND_SRC="same as controller"; fi
 echo "workspace: $WORKSPACE"
 echo "kind:      $KIND ($KIND_SRC)"
 echo "tab:       $LABEL ($TAB_ID)"
+if (( CTRL_RENAMED )); then
+  echo "ctrl tab:  ${OWNER} · ${WORK} (renamed from '${CTRL_TAB_ORIG}'; restored by --close-tab)"
+fi
+
 echo "manifest:  $MANIFEST"
 echo "tasks:     write per-agent task files to $TASKS_DIR/<name>-task.md (repo-relative; avoids /tmp permission prompts)"
 echo "agents:"
