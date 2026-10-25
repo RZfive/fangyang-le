@@ -12,6 +12,10 @@
 #   T4  old manifests without metadata still close fine, no restore attempted
 #   T5  fanout outside a herdr pane (no HERDR_TAB_ID) skips renaming silently
 #   T6  if `herdr tab rename` fails, fanout still succeeds without metadata
+#   T7  --owner omitted: a random western name is assigned and used for both
+#       the controller tab ("<name> · work") and the pen ("<name>的羊圈 · work")
+#   T8  a western name already on the controller's tab is kept on re-fanout
+#   T9  western names already used by other tabs in the workspace are skipped
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,6 +49,17 @@ case "$1 $2" in
     ;;
   "tab get")
     echo "{\"result\":{\"tab\":{\"tab_id\":\"$3\",\"label\":$(cat "$TEST_DIR/ctrl_label")}}}"
+    ;;
+  "tab list")
+    if [ -f "$TEST_DIR/ws_labels" ]; then
+      python3 - "$TEST_DIR/ws_labels" <<'PY'
+import json, sys
+labels = [l.rstrip("\n") for l in open(sys.argv[1]) if l.strip()]
+print(json.dumps({"result": {"tabs": [{"label": l} for l in labels]}}))
+PY
+    else
+      echo '{"result":{"tabs":[]}}'
+    fi
     ;;
   "pane split")
     n="$(cat "$TEST_DIR/paneseq" 2>/dev/null || echo 0)"
@@ -176,6 +191,55 @@ T6_MANIFEST="$(find "$TEST_DIR/repo3/.fangyang" -name '*-agents.tsv' | head -n 1
 assert_contains "warns about failed rename"  "$TEST_DIR/t6-out.txt" "could not rename controller tab"
 assert_not_contains "no metadata on failure" "$T6_MANIFEST" "#controller_tab"
 rm -f "$TEST_DIR/rename_fails"
+
+echo "== T7: auto owner picks a random western name =="
+mkdir -p "$TEST_DIR/repo7"
+: > "$LOG"
+if bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo7" --count 2 \
+     --work 试点D --tasks d1,d2 > "$TEST_DIR/t7-out.txt" 2>&1; then
+  pass "fanout exits 0 with auto owner"
+else
+  fail "fanout failed with auto owner"; cat "$TEST_DIR/t7-out.txt"
+fi
+T7_OWNER="$(sed -n 's/^owner:     \(.*\) (western.*/\1/p' "$TEST_DIR/t7-out.txt" | head -n 1)"
+if [ -n "$T7_OWNER" ]; then
+  pass "assigned western owner: $T7_OWNER"
+else
+  fail "no western owner line in output"
+fi
+if printf '%s\n' 孤星客 响尾蛇 夜枭 快枪手 荒野狼 金马刺 龙卷风 铁蹄 尘暴 仙人掌 野玫瑰 蓝靴 老警长 赏金客 风滚草 白鬃马 牧羊犬 烈酒 双枪 荒漠之鹰 星尘 响雷 野牛比尔 峡谷回声 | grep -qx "$T7_OWNER"; then
+  pass "owner comes from the western pool"
+else
+  fail "owner '$T7_OWNER' is not in the western pool"
+fi
+assert_contains "renames controller tab with western name" "$LOG" "tab rename wT:tCTRL $T7_OWNER · 试点D"
+assert_contains "pen label uses western name"              "$LOG" "--label ${T7_OWNER}的羊圈 · 试点D"
+T7_MANIFEST="$(find "$TEST_DIR/repo7/.fangyang" -name '*-agents.tsv' | head -n 1)"
+assert_contains "records original label"                   "$T7_MANIFEST" "#controller_tab_label=1"
+
+echo "== T8: a western name already on the tab is kept =="
+mkdir -p "$TEST_DIR/repo8"
+printf '"夜枭 · 旧活"' > "$TEST_DIR/ctrl_label"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo8" --count 2 \
+  --work 新活 --tasks e1,e2 > "$TEST_DIR/t8-out.txt" 2>&1
+assert_contains "keeps the existing western name"  "$LOG" "tab rename wT:tCTRL 夜枭 · 新活"
+assert_contains "pen reuses the same western name" "$LOG" "--label 夜枭的羊圈 · 新活"
+assert_contains "owner source says kept"           "$TEST_DIR/t8-out.txt" "western, kept from this tab"
+T8_MANIFEST="$(find "$TEST_DIR/repo8/.fangyang" -name '*-agents.tsv' | head -n 1)"
+assert_contains "records pre-fanout label"         "$T8_MANIFEST" "#controller_tab_label=夜枭 · 旧活"
+printf '"1"' > "$TEST_DIR/ctrl_label"
+
+echo "== T9: names already used in the workspace are skipped =="
+mkdir -p "$TEST_DIR/repo9"
+for n in 孤星客 响尾蛇 夜枭 快枪手 荒野狼 金马刺 龙卷风 铁蹄 尘暴 仙人掌 野玫瑰 蓝靴 老警长 赏金客 风滚草 白鬃马 牧羊犬 烈酒 双枪 荒漠之鹰 星尘 响雷 野牛比尔; do
+  echo "$n 的羊圈 · 占用" >> "$TEST_DIR/ws_labels"
+done
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo9" --count 2 \
+  --work 试点E --tasks f1,f2 > "$TEST_DIR/t9-out.txt" 2>&1
+assert_contains "picks the only unused western name" "$LOG" "tab rename wT:tCTRL 峡谷回声 · 试点E"
+rm -f "$TEST_DIR/ws_labels"
 
 echo
 if [ "$FAIL" -eq 0 ]; then

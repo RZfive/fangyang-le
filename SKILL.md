@@ -230,7 +230,6 @@ Do not commit. Report changed files, tests, and gaps.
 ```bash
 "$SKILL_DIR/scripts/fanout.sh" \
   --count 6 \
-  --owner 主控 \
   --work "P2 补齐" \
   --tasks lsp,ui,bench,docs,rust,python \
   --cwd "$PWD"
@@ -244,9 +243,9 @@ Do not commit. Report changed files, tests, and gaps.
 <owner>的羊圈 · <work>
 ```
 
-例如：`主控的羊圈 · P2 补齐`。人可以直接在 herdr 的 tab 列表里看到“谁在带哪群羊、干什么活”。
+例如：`夜枭的羊圈 · P2 补齐`。`--owner` 缺省时从内置西部牛仔名池随机分配（孤星客、响尾蛇、夜枭、快枪手、荒野狼、金马刺……），自动避开本 workspace 已被其他 tab 占用的名字；主控 tab 上已有的西部名会沿用（同一主控再开一圈同名）。传 `--owner 主控` 可用回旧命名。人可以直接在 herdr 的 tab 列表里看到“谁在带哪群羊、干什么活”。
 
-同时 `fanout.sh` 会把**主控自己的 tab** 同步改名为 `<owner> · <work>`（如 `主控 · P2 补齐`），原名写入 manifest 元数据；`harvest.sh --close-tab` 关圈时自动恢复。多个主控并行时，谁的 tab 对应哪个羊圈一眼可辨。改名失败或不在 herdr pane 里时只降级提示，不影响放羊。
+同时 `fanout.sh` 会把**主控自己的 tab** 同步改名为 `<owner> · <work>`（如 `夜枭 · P2 补齐`），原名写入 manifest 元数据；`harvest.sh --close-tab` 关圈时自动恢复。多个主控并行时，谁的 tab 对应哪个羊圈一眼可辨。改名失败或不在 herdr pane 里时只降级提示，不影响放羊。
 
 查看 tab：
 

@@ -69,7 +69,6 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
 "$SKILL_DIR/scripts/fanout.sh" \
   --count 4 \
-  --owner 主控 \
   --work "P2 补齐" \
   --tasks lsp,ui,bench,docs
 ```
@@ -79,9 +78,9 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 - **不跨 workspace**：羊圈 tab/pane 建在主控自己的 `$HERDR_WORKSPACE_ID` 里；不在 herdr pane 里执行会报错，绝不猜。只有用户明确要求跨界时才传 `--workspace`（此时会打 WARNING）。
 - **子 agent 与主控同类**：`--kind` 默认 `auto`——claude 起 claude、opencode 起 opencode、codex 起 codex。同类额度满或用户点名时才显式 `--kind <kind>`。
 - **manifest 记录 workspace**：`.fangyang/herdr-<label>-agents.tsv`（落在当前仓库内，主控读写无需授权；fanout.sh 自动建目录并幂等追加 `.gitignore`）每行 4 列 `name/pane/tab/workspace`，收割时会校验。
-- **主控 tab 联动**：fanout 把主控自己的 tab 同步改名 `<owner> · <work>`，原名记进 manifest `#controller_tab_*` 元数据行；`harvest.sh --close-tab` 关圈时自动恢复原名。不在 herdr pane 里或改名失败时只降级提示，不影响放羊。
+- **西部主控名**：`--owner` 缺省时从西部牛仔名池随机分配（夜枭、响尾蛇、孤星客……），自动避开本 workspace 已占用的名字；主控 tab 已有西部名则沿用。主控 tab 同步改名 `<owner> · <work>`，原名记进 manifest `#controller_tab_*` 元数据行，`harvest.sh --close-tab` 关圈时自动恢复。不在 herdr pane 里或改名失败时只降级提示，不影响放羊。
 
-新 tab 名称类似 `主控的羊圈 · P2 补齐`，主控自己的 tab 同步变成 `主控 · P2 补齐`，每个 agent 名字是 `lsp`、`ui`、`bench`、`docs`。
+新 tab 名称类似 `夜枭的羊圈 · P2 补齐`，主控自己的 tab 同步变成 `夜枭 · P2 补齐`，每个 agent 名字是 `lsp`、`ui`、`bench`、`docs`。
 
 收割（从同一个 workspace；不一致会警告 cross-workspace harvest）。**默认保留羊圈**，方便用户点开查看每只羊的现场：
 

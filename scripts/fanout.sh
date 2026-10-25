@@ -8,7 +8,8 @@ KIND=auto
 LABEL=""
 CWD="$PWD"
 PREFIX="worker"
-OWNER="主控"
+OWNER=""
+
 WORK=""
 TASKS=""
 FOCUS=0
@@ -29,7 +30,10 @@ Options:
                    own tab is renamed to "<owner> · <work>" to pair with it
                    (the original label is recorded in the manifest and restored
                    by harvest --close-tab)
-  --owner NAME     Who owns this sheepfold (default: 主控)
+  --owner NAME     Controller name (default: auto — a random western cowboy
+                   name like 夜枭/响尾蛇/孤星客, unique in this workspace; a
+                   name already on this tab is reused). The pen is named
+                   "<owner>的羊圈 · <work>", the controller's tab "<owner> · <work>"
   --work TEXT      What the group is working on (default: 并行任务)
   --tasks LIST     Comma-separated agent names, e.g. lsp,ui,bench
   --cwd PATH       Working directory for the tab (default: current directory)
@@ -72,7 +76,6 @@ if [[ ! -d "$CWD" ]]; then
   exit 2
 fi
 WORK="${WORK:-并行任务}"
-LABEL="${LABEL:-${OWNER}的羊圈 · ${WORK}}"
 
 TASK_NAMES=()
 if [[ -n "$TASKS" ]]; then
@@ -90,6 +93,37 @@ cur=obj
 for key in sys.argv[1:]:
     cur=cur[key]
 print(cur)' "$@"
+}
+
+# Rule 4: give the controller a western cowboy name and pair its tab with the pen.
+# Pens are "<owner>的羊圈 · <work>" and controllers are "<owner> · <work>" so
+# parallel controllers are easy to tell apart at a glance.
+WESTERN_NAMES=(
+  孤星客 响尾蛇 夜枭 快枪手 荒野狼 金马刺 龙卷风 铁蹄 尘暴 仙人掌
+  野玫瑰 蓝靴 老警长 赏金客 风滚草 白鬃马 牧羊犬 烈酒 双枪 荒漠之鹰
+  星尘 响雷 野牛比尔 峡谷回声
+)
+
+pick_western_owner() {
+  # $1 = current label of the controller's tab ("" when not in a herdr tab)
+  # $2 = space-joined labels of all tabs in the workspace ("" on failure)
+  # 1) a western name already on this tab is kept (second fold, same name)
+  # 2) otherwise pick at random, skipping names used by other tabs here
+  local cur="$1" labels="$2" name
+  for name in "${WESTERN_NAMES[@]}"; do
+    if [[ "$cur" == "$name" || "$cur" == "$name · "* ]]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+  local -a pool=()
+  for name in "${WESTERN_NAMES[@]}"; do
+    [[ "$labels" == *"$name"* ]] || pool+=("$name")
+  done
+  if (( ${#pool[@]} == 0 )); then
+    pool=("${WESTERN_NAMES[@]}")
+  fi
+  printf '%s' "${pool[$((RANDOM % ${#pool[@]}))]}"
 }
 
 # Rule 1: sheep stay in the controller's own workspace.
@@ -143,32 +177,52 @@ if [[ -d "$CWD/.git" ]] && ! grep -qs '^\.fangyang/$' "$CWD/.gitignore" 2>/dev/n
   echo "gitignore: added .fangyang/ to $CWD/.gitignore"
 fi
 
+# Rule 4a: resolve the owner name before building the pen label.
+# Read the controller's current tab label first: it doubles as the
+# "original label" recorded in the manifest for harvest --close-tab restore.
+CTRL_TAB_ORIG=""
+if [[ -n "${HERDR_TAB_ID:-}" ]]; then
+  CTRL_TAB_ORIG="$(herdr tab get "$HERDR_TAB_ID" 2>/dev/null | json_get result tab label 2>/dev/null || true)"
+fi
+OWNER_SRC="explicit"
+if [[ -z "$OWNER" || "$OWNER" == "auto" ]]; then
+  WS_LABELS=""
+  if [[ -n "$WORKSPACE" ]]; then
+    WS_LABELS="$(herdr tab list --workspace "$WORKSPACE" 2>/dev/null | python3 -c 'import json,sys
+try:
+    obj = json.load(sys.stdin)
+    print(" ".join(str(t.get("label", "")) for t in obj["result"]["tabs"]))
+except Exception:
+    print("")' || true)"
+  fi
+  OWNER="$(pick_western_owner "$CTRL_TAB_ORIG" "$WS_LABELS")"
+  if [[ -n "$CTRL_TAB_ORIG" && "$CTRL_TAB_ORIG" == "$OWNER"* ]]; then
+    OWNER_SRC="western, kept from this tab"
+  else
+    OWNER_SRC="western, random pick"
+  fi
+fi
+LABEL="${LABEL:-${OWNER}的羊圈 · ${WORK}}"
+
 MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-agents.tsv"
 FOCUS_FLAG="--no-focus"
 if (( FOCUS == 1 )); then FOCUS_FLAG="--focus"; fi
 TAB_JSON="$(herdr tab create --workspace "$WORKSPACE" --cwd "$CWD" --label "$LABEL" "$FOCUS_FLAG")"
 ROOT_PANE="$(printf '%s' "$TAB_JSON" | json_get result root_pane pane_id)"
 TAB_ID="$(printf '%s' "$TAB_JSON" | json_get result tab tab_id)"
-# Rule 4: pair the controller's tab with its sheepfold.
-# The pen is labeled "<owner>的羊圈 · <work>" while the controller's own tab
-# keeps a default label ("1", "3", ...), so with several controllers running,
-# folds cannot be matched to their owners. Rename the controller's tab to
-# "<owner> · <work>" here; the original label is stored in the manifest as
+# Rule 4b: rename the controller's own tab to "<owner> · <work>" so it pairs
+# with the pen; the original label is stored in the manifest as
 # "#controller_tab_*" metadata so harvest --close-tab can restore it.
-CTRL_TAB_ORIG=""
 CTRL_RENAMED=0
 CTRL_TAB_META_ID=""
 CTRL_TAB_META_LABEL=""
-if [[ -n "${HERDR_TAB_ID:-}" ]]; then
-  CTRL_TAB_ORIG="$(herdr tab get "$HERDR_TAB_ID" 2>/dev/null | json_get result tab label 2>/dev/null || true)"
-  if [[ -n "$CTRL_TAB_ORIG" ]]; then
-    if herdr tab rename "$HERDR_TAB_ID" "${OWNER} · ${WORK}" >/dev/null 2>&1; then
-      CTRL_RENAMED=1
-      CTRL_TAB_META_ID="#controller_tab_id=${HERDR_TAB_ID}"
-      CTRL_TAB_META_LABEL="#controller_tab_label=${CTRL_TAB_ORIG}"
-    else
-      echo "warn: fold opened, but could not rename controller tab ${HERDR_TAB_ID}" >&2
-    fi
+if [[ -n "${HERDR_TAB_ID:-}" ]] && [[ -n "$CTRL_TAB_ORIG" ]]; then
+  if herdr tab rename "$HERDR_TAB_ID" "${OWNER} · ${WORK}" >/dev/null 2>&1; then
+    CTRL_RENAMED=1
+    CTRL_TAB_META_ID="#controller_tab_id=${HERDR_TAB_ID}"
+    CTRL_TAB_META_LABEL="#controller_tab_label=${CTRL_TAB_ORIG}"
+  else
+    echo "warn: fold opened, but could not rename controller tab ${HERDR_TAB_ID}" >&2
   fi
 fi
 
@@ -194,6 +248,7 @@ fi
 
 KIND_SRC="explicit"
 if (( KIND_AUTO )); then KIND_SRC="same as controller"; fi
+echo "owner:     $OWNER ($OWNER_SRC)"
 echo "workspace: $WORKSPACE"
 echo "kind:      $KIND ($KIND_SRC)"
 echo "tab:       $LABEL ($TAB_ID)"
