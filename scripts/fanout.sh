@@ -35,12 +35,15 @@ Options:
                    name already on this tab is reused). The pen is named
                    "<owner>的羊圈 · <work>", the controller's tab "<owner> · <work>"
   --work TEXT      What the group is working on (default: 并行任务)
-  --tasks LIST     Comma-separated agent names, e.g. lsp,ui,bench
+  --tasks LIST     Comma-separated agent names, e.g. lsp,ui,bench; each is
+                   auto-prefixed with the controller name (夜枭-lsp) so flocks
+                   sharing one workspace/repo never mix, with -2/-3 suffixes on
+                   exact-name collisions
   --cwd PATH       Working directory for the tab (default: current directory)
   --tasks-dir PATH Directory for task files + manifest (default: <cwd>/.fangyang).
                    Keeping task files inside the repo avoids per-agent /tmp permission
                    prompts; the directory is auto-added to .gitignore when possible.
-  --prefix NAME    Fallback agent name prefix (default: worker)
+  --prefix NAME    Fallback agent name base (default: worker; also owner-prefixed)
   --focus          Focus the new tab after creation
   --workspace ID   herdr workspace id (default: this pane's $HERDR_WORKSPACE_ID;
                    passing a different id is a deliberate cross-workspace override
@@ -210,6 +213,15 @@ if (( FOCUS == 1 )); then FOCUS_FLAG="--focus"; fi
 TAB_JSON="$(herdr tab create --workspace "$WORKSPACE" --cwd "$CWD" --label "$LABEL" "$FOCUS_FLAG")"
 ROOT_PANE="$(printf '%s' "$TAB_JSON" | json_get result root_pane pane_id)"
 TAB_ID="$(printf '%s' "$TAB_JSON" | json_get result tab tab_id)"
+
+# Isolation guard: never overwrite another flock's manifest. If the same
+# owner+work combination already produced a manifest in this tasks dir, the
+# new fold gets a "-<tab_id>" suffix instead of clobbering the old file.
+if [[ -e "$MANIFEST" ]]; then
+  MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-${TAB_ID}-agents.tsv"
+  echo "note: manifest for '${LABEL}' already exists; this fold writes $MANIFEST"
+fi
+
 # Rule 4b: rename the controller's own tab to "<owner> · <work>" so it pairs
 # with the pen; the original label is stored in the manifest as
 # "#controller_tab_*" metadata so harvest --close-tab can restore it.
@@ -260,12 +272,35 @@ echo "manifest:  $MANIFEST"
 echo "tasks:     write per-agent task files to $TASKS_DIR/<name>-task.md (repo-relative; avoids /tmp permission prompts)"
 echo "agents:"
 
+# Isolation: sheep names carry the owner prefix so flocks sharing one
+# workspace (or one repo's .fangyang) never mix; exact-name collisions
+# (a second fold with the same owner and task names) get -2/-3 suffixes.
+ALL_AGENT_NAMES="$(herdr agent list 2>/dev/null | python3 -c 'import json,sys
+try:
+    obj = json.load(sys.stdin)
+    print("\n".join(str(a.get("name") or "") for a in obj["result"]["agents"]))
+except Exception:
+    pass' || true)"
+agent_name_taken() {
+  printf '%s\n' "$ALL_AGENT_NAMES" | grep -qxF -- "$1"
+}
+
 for ((i = 0; i < COUNT; i++)); do
   if (( ${#TASK_NAMES[@]} > 0 )); then
-    NAME="${TASK_NAMES[$i]// /-}"
+    BASE="${OWNER}-${TASK_NAMES[$i]// /-}"
   else
-    NAME="${PREFIX}-$((i + 1))"
+    BASE="${OWNER}-${PREFIX}-$((i + 1))"
   fi
+  NAME="$BASE"
+  SUFFIX=2
+  while agent_name_taken "$NAME"; do
+    NAME="${BASE}-${SUFFIX}"
+    SUFFIX=$((SUFFIX + 1))
+  done
+  # Reserve immediately so duplicate task names inside one flock also split.
+  ALL_AGENT_NAMES="${ALL_AGENT_NAMES}
+${NAME}"
+  if (( i == 0 )); then FIRST_NAME="$NAME"; fi
   PANE="${PANES[$i]}"
   if herdr agent start "$NAME" --kind "$KIND" --pane "$PANE" --timeout 120000 >/dev/null; then
     printf '  %-20s %s\n' "$NAME" "$PANE"
@@ -275,10 +310,8 @@ for ((i = 0; i < COUNT; i++)); do
   fi
 done
 
-FIRST_NAME="${PREFIX}-1"
-if (( ${#TASK_NAMES[@]} > 0 )); then
-  FIRST_NAME="${TASK_NAMES[0]// /-}"
-fi
+# FIRST_NAME was captured from the first sheep above (owner-prefixed,
+# collision-suffixed) so the printed commands point at THIS fold's agents.
 
 # Path referenced in the first-sheep prompt: repo-relative when the tasks dir
 # lives under --cwd (cleaner prompt), absolute otherwise (still unambiguous).

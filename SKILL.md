@@ -54,6 +54,7 @@ rm -rf /tmp/fangyang-le
 9. **不跨 workspace 放羊。** 羊圈 tab/pane 一律建在主控自己的 `$HERDR_WORKSPACE_ID` 里；绝不用“当前 focus 所在”的 workspace（focus 可能停在别的控制方的羊圈上）。`fanout.sh` 默认锁定主控 workspace；只有用户明确要求跨界时才显式 `--workspace`。
 10. **子 agent 与主控同类。** Claude Code 起的羊就是 claude，OpenCode 起的羊就是 opencode：`--kind` 默认 `auto`，自动取主控自己的 kind。只有同类额度耗尽或用户点名要别的模型时，才显式换 kind，并在汇报时说明。
 11. **收割后保留羊圈。** 任务结束先不关 pane/tab，让用户随时点开羊圈查看每只羊的现场和产出；主控完成审查、统一验证、汇报之后，**提示用户羊圈还开着**，等用户确认审查完毕才关闭羊圈。绝不收割完就悄悄拆圈。
+12. **同 workspace 多主控隔离，互不相窜。** 羊名一律自动带主控前缀 `<owner>-<任务名>`（如 `夜枭-lsp`），不同主控的羊永不重名；撞名（同主控二圈同名任务、或显式 `--owner` 撞车）自动加 `-2/-3` 后缀；manifest 同名不覆盖（自动加 tab id 后缀）。prompt/wait/read/收割全部走 manifest 里记录的带前缀羊名，不会读到别的圈的羊。
 
 ## 快速口令
 
@@ -378,7 +379,7 @@ worker-1 w7:pB  w7:t5  w7
   --close-tab
 ```
 
-命名建议直接用任务名，例如 `lsp-tool`、`ui-persist`、`rust-1`。`--tasks` 会按逗号拆分并作为 agent 名字，不要全叫 `worker-1`。
+`--tasks` 按逗号拆分作为任务名，脚本自动给每只羊加主控前缀：`--tasks lsp-tool,ui-persist` 实际起名 `夜枭-lsp-tool`、`夜枭-ui-persist`（同 workspace 多圈隔离；撞名自动 `-2/-3` 后缀）。任务文件同名跟随：`.fangyang/夜枭-lsp-tool-task.md`。直接用任务语义命名即可，不要手动加主控前缀。
 
 ## 4. 派发
 

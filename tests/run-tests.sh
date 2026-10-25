@@ -16,6 +16,10 @@
 #       the controller tab ("<name> · work") and the pen ("<name>的羊圈 · work")
 #   T8  a western name already on the controller's tab is kept on re-fanout
 #   T9  western names already used by other tabs in the workspace are skipped
+#   T10 agent names carry the owner prefix (主控/夜枭-a1) so flocks never mix
+#   T11 a second fold with the same owner+work gets -2/-3 sheep names and a
+#       tab-id-suffixed manifest; the old manifest is never overwritten
+#   T12 duplicate task names inside one flock also get unique suffixes
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,6 +76,13 @@ PY
       echo '{"result":{"agent":{"agent":"claude"}}}'
     else
       echo "{\"result\":{\"agent\":{\"agent\":\"$3\",\"agent_status\":\"idle\",\"pane_id\":\"wT:pA1\"}}}"
+    fi
+    ;;
+  "agent list")
+    if [ -f "$TEST_DIR/agents.json" ]; then
+      cat "$TEST_DIR/agents.json"
+    else
+      echo '{"result":{"agents":[]}}'
     fi
     ;;
   "agent start")
@@ -136,13 +147,14 @@ assert_contains "renames controller tab"           "$LOG" "tab rename wT:tCTRL �
 assert_contains "records controller tab id"        "$T1_MANIFEST" "#controller_tab_id=wT:tCTRL"
 assert_contains "records original label"           "$T1_MANIFEST" "#controller_tab_label=1"
 assert_contains "prints ctrl tab note"             "$TEST_DIR/t1-out.txt" "ctrl tab:"
-assert_contains "manifest still lists agents"      "$T1_MANIFEST" "a1	wT:pROOT	wT:tPEN	wT"
+assert_contains "manifest still lists agents"      "$T1_MANIFEST" "主控-a1	wT:pROOT	wT:tPEN	wT"
+assert_contains "starts prefixed agent names"       "$LOG" "agent start 主控-a1"
 
 echo "== T2: harvest skips # metadata lines when parsing the manifest =="
 : > "$LOG"
 bash "$REPO_DIR/scripts/harvest.sh" --manifest "$T1_MANIFEST" > "$TEST_DIR/t2-out.txt" 2>&1
-assert_contains "harvests agent a1"    "$LOG" "agent get a1"
-assert_contains "harvests agent a2"    "$LOG" "agent get a2"
+assert_contains "harvests agent a1"    "$LOG" "agent get 主控-a1"
+assert_contains "harvests agent a2"    "$LOG" "agent get 主控-a2"
 assert_not_contains "metadata not treated as agent" "$LOG" "agent get #controller"
 
 echo "== T3: harvest --close-tab restores the controller tab label =="
@@ -240,6 +252,50 @@ bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo9" --count 2 \
   --work 试点E --tasks f1,f2 > "$TEST_DIR/t9-out.txt" 2>&1
 assert_contains "picks the only unused western name" "$LOG" "tab rename wT:tCTRL 峡谷回声 · 试点E"
 rm -f "$TEST_DIR/ws_labels"
+
+echo "== T10: agent names carry the owner prefix =="
+mkdir -p "$TEST_DIR/repo10"
+rm -f "$TEST_DIR/agents.json"
+: > "$LOG"
+if bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo10" --count 2 \
+     --owner 夜枭 --work 隔离A --tasks lsp,ui > "$TEST_DIR/t10-out.txt" 2>&1; then
+  pass "fanout exits 0"
+else
+  fail "fanout exited non-zero"; cat "$TEST_DIR/t10-out.txt"
+fi
+assert_contains "starts 夜枭-lsp"     "$LOG" "agent start 夜枭-lsp --kind claude"
+assert_contains "starts 夜枭-ui"      "$LOG" "agent start 夜枭-ui --kind claude"
+T10_MANIFEST="$TEST_DIR/repo10/.fangyang/herdr-夜枭的羊圈_·_隔离A-agents.tsv"
+assert_contains "manifest lists prefixed names" "$T10_MANIFEST" "夜枭-lsp	wT:pROOT	wT:tPEN	wT"
+assert_contains "first task file is prefixed"    "$TEST_DIR/t10-out.txt" ".fangyang/夜枭-lsp-task.md"
+
+echo "== T11: a second fold with the same owner+work stays isolated =="
+cat > "$TEST_DIR/agents.json" <<'JSON'
+{"result":{"agents":[{"name":"夜枭-lsp"},{"name":"夜枭-ui"}]}}
+JSON
+: > "$LOG"
+if bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo10" --count 2 \
+     --owner 夜枭 --work 隔离A --tasks lsp,ui > "$TEST_DIR/t11-out.txt" 2>&1; then
+  pass "second fanout exits 0"
+else
+  fail "second fanout exited non-zero"; cat "$TEST_DIR/t11-out.txt"
+fi
+assert_contains "suffixed sheep lsp"    "$LOG" "agent start 夜枭-lsp-2 --kind claude"
+assert_contains "suffixed sheep ui"     "$LOG" "agent start 夜枭-ui-2 --kind claude"
+assert_contains "prints manifest note"   "$TEST_DIR/t11-out.txt" "already exists"
+T11_MANIFEST="$TEST_DIR/repo10/.fangyang/herdr-夜枭的羊圈_·_隔离A-wT:tPEN-agents.tsv"
+[ -f "$T11_MANIFEST" ] && pass "tab-id-suffixed manifest created" || fail "suffixed manifest missing"
+assert_contains "old manifest keeps flock 1"   "$T10_MANIFEST" "夜枭-lsp	wT:pROOT	wT:tPEN	wT"
+assert_not_contains "old manifest untouched"   "$T10_MANIFEST" "-2"
+
+echo "== T12: duplicate task names inside one flock get unique names =="
+mkdir -p "$TEST_DIR/repo12"
+rm -f "$TEST_DIR/agents.json"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo12" --count 2 \
+  --owner 夜枭 --work 隔离B --tasks a1,a1 > "$TEST_DIR/t12-out.txt" 2>&1
+assert_contains "first keeps plain name"  "$LOG" "agent start 夜枭-a1 --kind claude"
+assert_contains "second gets a suffix"     "$LOG" "agent start 夜枭-a1-2 --kind claude"
 
 echo
 if [ "$FAIL" -eq 0 ]; then
