@@ -36,7 +36,8 @@ Options:
                    "<owner>的羊圈 · <work>", the controller's tab "<owner> · <work>"
   --work TEXT      What the group is working on (default: 并行任务)
   --tasks LIST     Comma-separated agent names, e.g. lsp,ui,bench; each is
-                   auto-prefixed with the controller name (夜枭-lsp) so flocks
+                   auto-prefixed with the controller's ASCII slug (夜枭 -> night-owl-lsp;
+                   herdr only accepts lowercase ASCII agent names) so flocks
                    sharing one workspace/repo never mix, with -2/-3 suffixes on
                    exact-name collisions
   --cwd PATH       Working directory for the tab (default: current directory)
@@ -106,6 +107,62 @@ WESTERN_NAMES=(
   野玫瑰 蓝靴 老警长 赏金客 风滚草 白鬃马 牧羊犬 烈酒 双枪 荒漠之鹰
   星尘 响雷 野牛比尔 峡谷回声
 )
+
+# herdr agent names must be ASCII lowercase [a-z][a-z0-9_-]{0,31}. Tabs and
+# labels keep the Chinese owner name; agent names use an ASCII slug prefix so
+# `herdr agent start` never fails with invalid_agent_name. bash-3.2 safe: no
+# assoc arrays, no ${var,,}.
+western_slug() {
+  case "$1" in
+    孤星客) printf 'lone-star' ;;
+    响尾蛇) printf 'rattler' ;;
+    夜枭) printf 'night-owl' ;;
+    快枪手) printf 'quick-shot' ;;
+    荒野狼) printf 'dust-wolf' ;;
+    金马刺) printf 'gold-spur' ;;
+    龙卷风) printf 'tornado' ;;
+    铁蹄) printf 'iron-hoof' ;;
+    尘暴) printf 'dust-storm' ;;
+    仙人掌) printf 'cactus' ;;
+    野玫瑰) printf 'wild-rose' ;;
+    蓝靴) printf 'blue-boots' ;;
+    老警长) printf 'old-sheriff' ;;
+    赏金客) printf 'bounty-hunter' ;;
+    风滚草) printf 'tumbleweed' ;;
+    白鬃马) printf 'white-mane' ;;
+    牧羊犬) printf 'shepherd' ;;
+    烈酒) printf 'firewater' ;;
+    双枪) printf 'twin-guns' ;;
+    荒漠之鹰) printf 'desert-eagle' ;;
+    星尘) printf 'stardust' ;;
+    响雷) printf 'thunder' ;;
+    野牛比尔) printf 'buffalo-bill' ;;
+    峡谷回声) printf 'canyon-echo' ;;
+    *) return 1 ;;
+  esac
+}
+
+ascii_slug() {
+  local s out ch j
+  s="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  s="${s// /-}"
+  out=""
+  for ((j = 0; j < ${#s}; j++)); do
+    ch="${s:j:1}"
+    if [[ "$ch" == [a-z0-9-] ]]; then out+="$ch"; fi
+  done
+  out="${out:-herd}"
+  printf '%s' "${out:0:32}"
+}
+
+owner_agent_prefix() {
+  local slug
+  if slug="$(western_slug "$1")"; then
+    printf '%s' "$slug"
+  else
+    ascii_slug "$1"
+  fi
+}
 
 pick_western_owner() {
   # $1 = current label of the controller's tab ("" when not in a herdr tab)
@@ -275,6 +332,8 @@ echo "agents:"
 # Isolation: sheep names carry the owner prefix so flocks sharing one
 # workspace (or one repo's .fangyang) never mix; exact-name collisions
 # (a second fold with the same owner and task names) get -2/-3 suffixes.
+# The prefix is the owner's ASCII slug — herdr rejects non-ASCII agent names.
+OWNER_PREFIX="$(owner_agent_prefix "$OWNER")"
 ALL_AGENT_NAMES="$(herdr agent list 2>/dev/null | python3 -c 'import json,sys
 try:
     obj = json.load(sys.stdin)
@@ -287,10 +346,11 @@ agent_name_taken() {
 
 for ((i = 0; i < COUNT; i++)); do
   if (( ${#TASK_NAMES[@]} > 0 )); then
-    BASE="${OWNER}-${TASK_NAMES[$i]// /-}"
+    BASE="${OWNER_PREFIX}-$(ascii_slug "${TASK_NAMES[$i]}")"
   else
-    BASE="${OWNER}-${PREFIX}-$((i + 1))"
+    BASE="${OWNER_PREFIX}-${PREFIX}-$((i + 1))"
   fi
+  BASE="$(ascii_slug "$BASE")"
   NAME="$BASE"
   SUFFIX=2
   while agent_name_taken "$NAME"; do
