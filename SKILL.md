@@ -236,7 +236,7 @@ Do not commit. Report changed files, tests, and gaps.
   --cwd "$PWD"
 ```
 
-脚本会创建 tab、网格 pane、启动 agent，并打印每个 agent 的名字和 pane id。羊圈建在主控自己的 `$HERDR_WORKSPACE_ID` 里，不跨 workspace；不在 herdr pane 里执行会直接报错。
+脚本会创建 tab、网格 pane、启动 agent，并打印每个 agent 的名字和 pane id。羊圈建在主控自己的 `$HERDR_WORKSPACE_ID` 里，不跨 workspace；在 herdr pane 外执行时进入外部放羊模式：自动安装/启动 herdr 并新建专属牧场 workspace（见下文"外部放羊"）。
 
 主控留在原 tab；新 tab 的标签默认是：
 
@@ -246,7 +246,15 @@ Do not commit. Report changed files, tests, and gaps.
 
 例如：`夜枭的羊圈 · P2 补齐`。`--owner` 缺省时从内置西部牛仔名池随机分配（孤星客、响尾蛇、夜枭、快枪手、荒野狼、金马刺……），自动避开本 workspace 已被其他 tab 占用的名字；主控 tab 上已有的西部名会沿用（同一主控再开一圈同名）。传 `--owner 主控` 可用回旧命名。人可以直接在 herdr 的 tab 列表里看到“谁在带哪群羊、干什么活”。
 
-同时 `fanout.sh` 会把**主控自己的 tab** 同步改名为 `<owner> · <work>`（如 `夜枭 · P2 补齐`），原名写入 manifest 元数据；`harvest.sh --close-tab` 关圈时自动恢复。多个主控并行时，谁的 tab 对应哪个羊圈一眼可辨。改名失败或不在 herdr pane 里时只降级提示，不影响放羊。
+同时 `fanout.sh` 会把**主控自己的 tab** 同步改名为 `<owner> · <work>`（如 `夜枭 · P2 补齐`），原名写入 manifest 元数据；`harvest.sh --close-tab` 关圈时自动恢复。多个主控并行时，谁的 tab 对应哪个羊圈一眼可辨。改名失败或不在 herdr pane 里时只降级提示，不影响放羊（外部放羊模式没有主控 tab，直接跳过改名）。
+
+**外部放羊（在 herdr pane 外跑 `fanout.sh`）：** 没检测到 `HERDR_WORKSPACE_ID` 时不再直接报错，而是自动 bootstrap——先跑 `scripts/ensure-herdr.sh` 确保 herdr CLI 和 headless `herdr server` 可用（已有则复用、缺失则安装/拉起并等待就绪），再新建 `<owner>的牧场 · <work>` 专属 workspace 当羊圈。差异：
+
+- `--owner` 缺省仍从西部名池随机分配；显式 `--owner` 照常生效
+- 没有 herdr pane 可探测 kind，`--kind` 缺省按环境嗅探兜底（`CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT`→claude、`CODEX_HOME`/`CODEX_SANDBOX`→codex、`OPENCODE_BIN`/`OPENCODE_CONFIG_DIR`→opencode，最后兜底 claude）；建议显式传 `--kind`
+- 主控 tab 改名/恢复被跳过（外部没有主控 tab）
+- manifest 照常生成并记录牧场 workspace id；`harvest.sh` 在任何 shell 都能收割
+- `--no-bootstrap` 关闭自动 bootstrap、恢复直接报错；`FANGYANG_HERDR_BIN` / `FANGYANG_HERDR_INSTALL` / `FANGYANG_HERDR_SERVER_LOG` / `FANGYANG_SERVER_START_WAIT` 分别覆盖二进制路径、安装命令、server 日志与启动等待秒数
 
 查看 tab：
 
@@ -289,7 +297,7 @@ herdr agent start --help
 Workspace 纪律：
 
 1. 羊圈 tab、所有 pane、所有 agent 都建在主控自己的 `$HERDR_WORKSPACE_ID`
-2. `fanout.sh` 不带 `--workspace` 时自动锁定主控 workspace；不在 herdr pane 里（环境变量缺失）会直接报错，而不是猜一个
+2. `fanout.sh` 不带 `--workspace` 时自动锁定主控 workspace；在 herdr pane 外（环境变量缺失）自动 bootstrap：装好并启动 herdr 后新建**专属牧场 workspace**（`<owner>的牧场 · <work>`，绝不复用 focused/shared workspace）；传 `--no-bootstrap` 关闭并恢复直接报错
 3. 显式 `--workspace` 与主控 workspace 不同时会打 WARNING——仅限用户明确要求跨界时使用
 4. `harvest.sh` 发现 manifest 记录的 workspace 与当前 shell 不一致时会警告跨 workspace 收割，应回到起羊的 workspace 重新收割
 
@@ -539,8 +547,8 @@ git commit -m "<type>(<scope>): <summary>"
 
 ## 脚本
 
-- `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent；同步把主控 tab 改名 `<owner> · <work>`
-- `scripts/harvest.sh`：查看状态、等待、读取最终输出、可选关闭 pane；`--close-tab` 关圈时恢复主控 tab 原名
+- `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent；同步把主控 tab 改名 `<owner> · <work>`；在 herdr pane 外执行时自动 bootstrap（装 herdr、起 headless server、建专属牧场 workspace），`--no-bootstrap` 可关闭
+- `scripts/ensure-herdr.sh`：确保 herdr CLI 与 headless `herdr server` 可用（已有则复用、缺失则安装/拉起），幂等；供 fanout.sh 外部模式调用，也可单独执行
 - `tests/run-tests.sh`：离线 stub 测试（伪 herdr CLI），覆盖 fanout/harvest 的主控 tab 配对行为
 - `install.sh`：安装到 `~/.agents/skills/fangyang-le` 并链接到 agent skill 目录
 - `bootstrap.sh`：从 GitHub 克隆后自动安装
@@ -558,7 +566,8 @@ git commit -m "<type>(<scope>): <summary>"
 | 两个 agent 改同一文件 | 立刻停一个，主控接管该文件 |
 | cargo file lock 等待 | 正常，让它们排队；不要并行跑同一 target 的重型构建 |
 | agent 格式化无关文件 | 主控 revert 无关文件，只保留 scope 内 diff |
-| `fanout.sh` 报 `HERDR_WORKSPACE_ID is unset` | 不在 herdr pane 里跑脚本了；回到主控 pane 执行，或仅在用户明确要求跨界时传 `--workspace` |
+| `fanout.sh` 报 `HERDR_WORKSPACE_ID is unset` | 在 herdr pane 外跑脚本且传了 `--no-bootstrap`；去掉 `--no-bootstrap` 让它自动装环境并建牧场 workspace，或回到主控 pane 执行 |
+| 外部放羊 bootstrap 失败（herdr 装不上 / server 起不来） | `herdr status server` 手动确认；`FANGYANG_HERDR_BIN` 指定二进制路径、`FANGYANG_HERDR_INSTALL` 覆盖安装命令、`FANGYANG_HERDR_SERVER_LOG` 查看 headless server 日志；启动慢就调大 `FANGYANG_SERVER_START_WAIT` |
 | `fanout.sh` 报检测不到 agent kind | 控制方 pane 不是已注册 agent，或无 `$HERDR_PANE_ID`；显式传 `--kind claude / opencode / codex` |
 | `harvest.sh` 警告 cross-workspace harvest | 当前 shell 与起羊时的 workspace 不一致；`echo $HERDR_WORKSPACE_ID` 确认后，回到原 workspace 重新收割 |
 

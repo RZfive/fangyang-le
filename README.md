@@ -75,10 +75,11 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
 默认行为（可省略的都省了）：
 
-- **不跨 workspace**：羊圈 tab/pane 建在主控自己的 `$HERDR_WORKSPACE_ID` 里；不在 herdr pane 里执行会报错，绝不猜。只有用户明确要求跨界时才传 `--workspace`（此时会打 WARNING）。
+- **不跨 workspace**：羊圈 tab/pane 建在主控自己的 `$HERDR_WORKSPACE_ID` 里；在 herdr pane 外执行时自动 bootstrap（装 herdr、起 headless server、新建专属牧场 workspace），`--no-bootstrap` 可关闭并恢复直接报错。只有用户明确要求跨界时才传 `--workspace`（此时会打 WARNING）。
 - **子 agent 与主控同类**：`--kind` 默认 `auto`——claude 起 claude、opencode 起 opencode、codex 起 codex。同类额度满或用户点名时才显式 `--kind <kind>`。
 - **manifest 记录 workspace**：`.fangyang/herdr-<label>-agents.tsv`（落在当前仓库内，主控读写无需授权；fanout.sh 自动建目录并幂等追加 `.gitignore`）每行 4 列 `name/pane/tab/workspace`，收割时会校验。
 - **西部主控名**：`--owner` 缺省时从西部牛仔名池随机分配（夜枭、响尾蛇、孤星客……），自动避开本 workspace 已占用的名字；主控 tab 已有西部名则沿用。主控 tab 同步改名 `<owner> · <work>`，原名记进 manifest `#controller_tab_*` 元数据行，`harvest.sh --close-tab` 关圈时自动恢复。不在 herdr pane 里或改名失败时只降级提示，不影响放羊。
+- **外部放羊**：herdr pane 外跑 `fanout.sh` 时自动 bootstrap——`scripts/ensure-herdr.sh` 确保 herdr CLI 与 headless `herdr server` 可用（已有则复用、缺失则安装/拉起；`FANGYANG_HERDR_BIN` / `FANGYANG_HERDR_INSTALL` / `FANGYANG_HERDR_SERVER_LOG` / `FANGYANG_SERVER_START_WAIT` 可覆盖），羊圈落在专属 `<owner>的牧场 · <work>` workspace，manifest 照常记录、任何 shell 都能收割；`--kind` 缺省按环境嗅探兜底 claude，建议显式传。
 - **同 workspace 多主控隔离**：每只羊自动带主控 ASCII slug 前缀（`--tasks lsp,ui` 起名 `night-owl-lsp`、`night-owl-ui`；herdr 只接受 ASCII 小写 agent 名，中文主控名映射为固定英文 slug），撞名自动 `-2/-3` 后缀，任务文件随羊名隔离；manifest 同名不覆盖（自动加 tab id 后缀）。不同主控、不同圈各自收割，互不相窜。
 
 新 tab 名称类似 `夜枭的羊圈 · P2 补齐`，主控自己的 tab 同步变成 `夜枭 · P2 补齐`，每个 agent 名字是 `night-owl-lsp`、`night-owl-ui`、`night-owl-bench`、`night-owl-docs`（中文主控名映射为 ASCII slug，tab 标签仍显示中文）。

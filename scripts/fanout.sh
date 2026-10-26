@@ -15,6 +15,7 @@ TASKS=""
 FOCUS=0
 WORKSPACE="${HERDR_WORKSPACE_ID:-}"
 TASKS_DIR=""
+BOOTSTRAP=1
 
 usage() {
   cat <<'EOF'
@@ -49,6 +50,10 @@ Options:
   --workspace ID   herdr workspace id (default: this pane's $HERDR_WORKSPACE_ID;
                    passing a different id is a deliberate cross-workspace override
                    and prints a warning)
+  --no-bootstrap   Outside a herdr pane (no $HERDR_WORKSPACE_ID): fail fast
+                   instead of auto-installing herdr, starting the headless
+                   server, and creating a dedicated ranch workspace (default:
+                   bootstrap; see "external fanout" in SKILL.md)
   -h, --help       Show this help
 EOF
 }
@@ -66,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --prefix) PREFIX="$2"; shift 2 ;;
     --focus) FOCUS=1; shift ;;
     --workspace) WORKSPACE="$2"; shift 2 ;;
+    --no-bootstrap) BOOTSTRAP=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
   esac
@@ -189,14 +195,30 @@ pick_western_owner() {
 # Rule 1: sheep stay in the controller's own workspace.
 # Never fall back to the "focused" workspace — focus may point at another
 # controller's sheepfold, which would silently cross workspaces.
+EXTERNAL=0
 if [[ -z "$WORKSPACE" ]]; then
-  if [[ -z "${HERDR_WORKSPACE_ID:-}" ]]; then
-    echo "Not running inside a herdr pane (HERDR_WORKSPACE_ID is unset)." >&2
-    echo "Run fanout.sh from the controller's pane so sheep land in the same workspace." >&2
-    echo "Only pass --workspace explicitly when crossing workspaces is truly intended." >&2
+  if [[ -n "${HERDR_WORKSPACE_ID:-}" ]]; then
+    WORKSPACE="$HERDR_WORKSPACE_ID"
+  elif (( BOOTSTRAP == 1 )); then
+    # External fanout: no herdr pane, no workspace. Bootstrap the environment
+    # (install CLI + start headless server), pick the owner early, and create
+    # a dedicated ranch workspace — never the focused one, never a shared one.
+    EXTERNAL=1
+    "$SCRIPT_DIR/ensure-herdr.sh"
+    if [[ -z "$OWNER" || "$OWNER" == "auto" ]]; then
+      OWNER="$(pick_western_owner "" "")"
+      OWNER_SRC="western, external bootstrap"
+    fi
+    RANCH_JSON="$(herdr workspace create --cwd "$CWD" --label "${OWNER}的牧场 · ${WORK}" --no-focus)"
+    WORKSPACE="$(printf '%s' "$RANCH_JSON" | json_get result workspace workspace_id)"
+    echo "external:  no herdr pane detected — bootstrapped herdr, created ranch workspace $WORKSPACE (${OWNER}的牧场 · ${WORK})"
+    echo "external:  attach any time in a terminal with: herdr"
+  else
+    echo "Not running inside a herdr pane (HERDR_WORKSPACE_ID is unset) and --no-bootstrap was given." >&2
+    echo "Run fanout.sh from the controller's pane, or drop --no-bootstrap to let it install herdr," >&2
+    echo "start the headless server, and create a dedicated ranch workspace automatically." >&2
     exit 2
   fi
-  WORKSPACE="$HERDR_WORKSPACE_ID"
 fi
 if [[ -n "${HERDR_WORKSPACE_ID:-}" && "$WORKSPACE" != "$HERDR_WORKSPACE_ID" ]]; then
   echo "WARNING: --workspace '$WORKSPACE' differs from this pane's workspace '$HERDR_WORKSPACE_ID'." >&2
@@ -216,6 +238,13 @@ try:
     print(a.get("agent") or a.get("agent_kind") or "")
 except Exception:
     print("")' || true)"
+  elif (( EXTERNAL == 1 )); then
+    # Outside herdr there is no controller agent to copy. Sniff common agent
+    # environment markers, then default to claude (the skill's primary target).
+    if [[ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ]]; then SELF_KIND="claude"
+    elif [[ -n "${CODEX_HOME:-}" || -n "${CODEX_SANDBOX:-}" ]]; then SELF_KIND="codex"
+    elif [[ -n "${OPENCODE_BIN:-}" || -n "${OPENCODE_CONFIG_DIR:-}" ]]; then SELF_KIND="opencode"
+    else SELF_KIND="claude"; fi
   fi
   if [[ -z "$SELF_KIND" ]]; then
     echo "Could not detect this pane's agent kind (is the controller a recognized herdr agent?)." >&2
@@ -244,8 +273,9 @@ CTRL_TAB_ORIG=""
 if [[ -n "${HERDR_TAB_ID:-}" ]]; then
   CTRL_TAB_ORIG="$(herdr tab get "$HERDR_TAB_ID" 2>/dev/null | json_get result tab label 2>/dev/null || true)"
 fi
-OWNER_SRC="explicit"
+OWNER_SRC="${OWNER_SRC:-explicit}"
 if [[ -z "$OWNER" || "$OWNER" == "auto" ]]; then
+  OWNER_SRC="explicit"
   WS_LABELS=""
   if [[ -n "$WORKSPACE" ]]; then
     WS_LABELS="$(herdr tab list --workspace "$WORKSPACE" 2>/dev/null | python3 -c 'import json,sys
@@ -317,6 +347,7 @@ fi
 
 KIND_SRC="explicit"
 if (( KIND_AUTO )); then KIND_SRC="same as controller"; fi
+if (( KIND_AUTO && EXTERNAL )); then KIND_SRC="external fallback (env sniff, default claude)"; fi
 echo "owner:     $OWNER ($OWNER_SRC)"
 echo "workspace: $WORKSPACE"
 echo "kind:      $KIND ($KIND_SRC)"

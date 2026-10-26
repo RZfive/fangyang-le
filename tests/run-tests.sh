@@ -21,6 +21,13 @@
 #   T11 a second fold with the same owner+work gets -2/-3 sheep names and a
 #       tab-id-suffixed manifest; the old manifest is never overwritten
 #   T12 duplicate task names inside one flock also get unique suffixes
+#   T13 ensure-herdr.sh installs the CLI via brew when herdr is missing,
+#       then starts the headless server and waits for readiness
+#   T14 ensure-herdr.sh detects a running server and does not start another
+#   T15 fanout from an external shell (no HERDR_* envs) bootstraps herdr,
+#       creates a dedicated ranch workspace, defaults kind to claude,
+#       skips controller-tab renaming, and records the ranch in the manifest
+#   T16 fanout --no-bootstrap outside a herdr pane fails fast with exit 2
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -102,6 +109,18 @@ PY
   "tab close"|"pane close")
     exit 0
     ;;
+  "workspace create")
+    echo '{"result":{"workspace":{"workspace_id":"wRANCH"},"tab":{"tab_id":"wRANCH:t0"},"root_pane":{"pane_id":"wRANCH:p0"}}}'
+    ;;
+  "status server")
+    [ -f "$TEST_DIR/server_up" ] && exit 0
+    exit 1
+    ;;
+  "server"*)
+    # bare `herdr server` (headless start): simulate a server becoming ready
+    touch "$TEST_DIR/server_up"
+    exit 0
+    ;;
   *)
     echo "stub: unhandled command: $*" >&2
     exit 64
@@ -115,6 +134,12 @@ printf '"1"\n' > "$TEST_DIR/ctrl_label"
 
 PATH="$STUB_BIN:$PATH"
 export PATH
+
+# Hermeticity: this suite is often launched from inside a real herdr pane
+# (agents/WorldBase run there), whose HERDR_* env vars would leak into the
+# stub-based tests. The workspace/pane/tab vars are re-exported below; scrub
+# every other herdr marker so results never depend on the launching shell.
+unset HERDR_ENV HERDR_SOCKET_PATH HERDR_BIN_PATH
 
 export HERDR_WORKSPACE_ID=wT
 export HERDR_PANE_ID=wT:pCTRL
@@ -297,6 +322,96 @@ bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo12" --count 2 \
   --owner 夜枭 --work 隔离B --tasks a1,a1 > "$TEST_DIR/t12-out.txt" 2>&1
 assert_contains "first keeps plain name"  "$LOG" "agent start night-owl-a1 --kind claude"
 assert_contains "second gets a suffix"     "$LOG" "agent start night-owl-a1-2 --kind claude"
+
+echo "== T13: ensure-herdr installs the missing CLI (brew) and starts the server =="
+# PATH hides the stub herdr; a stub brew drops the herdr "binary" into a dir
+# that IS on PATH, simulating a real install.
+mkdir -p "$TEST_DIR/t13bin" "$TEST_DIR/t13install"
+cp "$STUB_BIN/herdr" "$TEST_DIR/herdr-template"
+cat > "$TEST_DIR/t13bin/brew" <<EOS
+#!/usr/bin/env bash
+cp "$TEST_DIR/herdr-template" "$TEST_DIR/t13install/herdr"
+chmod +x "$TEST_DIR/t13install/herdr"
+EOS
+chmod +x "$TEST_DIR/t13bin/brew"
+rm -f "$TEST_DIR/server_up"
+: > "$LOG"
+if (PATH="$TEST_DIR/t13bin:$TEST_DIR/t13install:/usr/bin:/bin:/usr/sbin:/sbin" \
+     FANGYANG_HERDR_SERVER_LOG="$TEST_DIR/t13-server.log" \
+     bash "$REPO_DIR/scripts/ensure-herdr.sh" > "$TEST_DIR/t13-out.txt" 2>&1); then
+  pass "ensure-herdr exits 0"
+else
+  fail "ensure-herdr exited non-zero"; cat "$TEST_DIR/t13-out.txt"
+fi
+[ -x "$TEST_DIR/t13install/herdr" ] && pass "brew was invoked and installed herdr" \
+  || fail "brew stub never installed herdr"
+assert_contains "reports installing"      "$TEST_DIR/t13-out.txt" "installing"
+assert_contains "reports installed path"  "$TEST_DIR/t13-out.txt" "installed:"
+assert_contains "reports server ready"    "$TEST_DIR/t13-out.txt" "ready"
+[ -f "$TEST_DIR/server_up" ] && pass "headless server started" \
+  || fail "server never came up"
+
+echo "== T14: ensure-herdr is a no-op when the server already runs =="
+mkdir -p "$TEST_DIR/repo14"
+# server_up marker still exists from T13 -> server considered running
+: > "$LOG"
+if FANGYANG_HERDR_SERVER_LOG="$TEST_DIR/t14-server.log" \
+   bash "$REPO_DIR/scripts/ensure-herdr.sh" > "$TEST_DIR/t14-out.txt" 2>&1; then
+  pass "ensure-herdr exits 0 with running server"
+else
+  fail "ensure-herdr failed with running server"; cat "$TEST_DIR/t14-out.txt"
+fi
+assert_contains   "reports already running" "$TEST_DIR/t14-out.txt" "already running"
+if grep -qx "server" "$LOG"; then
+  fail "bare 'herdr server' started although server was already up"
+else
+  pass "no bare server start when already running"
+fi
+
+echo "== T15: external fanout bootstraps a ranch workspace =="
+mkdir -p "$TEST_DIR/repo15"
+rm -f "$TEST_DIR/server_up" "$TEST_DIR/agents.json"
+: > "$LOG"
+if (unset HERDR_WORKSPACE_ID HERDR_PANE_ID HERDR_TAB_ID \
+        CLAUDECODE CLAUDE_CODE_ENTRYPOINT CODEX_HOME CODEX_SANDBOX \
+        OPENCODE_BIN OPENCODE_CONFIG_DIR;
+     FANGYANG_HERDR_SERVER_LOG="$TEST_DIR/t15-server.log" \
+     bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo15" --count 2 \
+       --work 外部试点 --tasks x1,x2 > "$TEST_DIR/t15-out.txt" 2>&1); then
+  pass "external fanout exits 0"
+else
+  fail "external fanout failed"; cat "$TEST_DIR/t15-out.txt"
+fi
+T15_MANIFEST="$(find "$TEST_DIR/repo15/.fangyang" -name '*-agents.tsv' | head -n 1)"
+assert_contains "bootstrapped the server"        "$TEST_DIR/t15-out.txt" "ensure-herdr: herdr server ready"
+assert_contains "prints external note"           "$TEST_DIR/t15-out.txt" "external:"
+assert_contains "creates a ranch workspace"      "$LOG" "workspace create --cwd"
+assert_contains "ranch label uses 牧场"           "$LOG" "的牧场 · 外部试点"
+assert_contains "pen tab inside the ranch ws"    "$LOG" "tab create --workspace wRANCH"
+assert_contains "kind falls back to claude"      "$TEST_DIR/t15-out.txt" "external fallback"
+assert_contains "starts claude sheep"            "$LOG" "x1 --kind claude"
+assert_not_contains "no controller tab rename"   "$LOG" "tab rename"
+assert_not_contains "no controller tab metadata" "$T15_MANIFEST" "#controller_tab"
+assert_contains "manifest records ranch ws"      "$T15_MANIFEST" "wRANCH"
+
+echo "== T16: --no-bootstrap outside a herdr pane fails fast =="
+mkdir -p "$TEST_DIR/repo16"
+rm -f "$TEST_DIR/server_up"
+: > "$LOG"
+if (unset HERDR_WORKSPACE_ID HERDR_PANE_ID HERDR_TAB_ID;
+     bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo16" --count 2 \
+       --no-bootstrap > "$TEST_DIR/t16-out.txt" 2>&1); then
+  fail "--no-bootstrap outside herdr unexpectedly succeeded"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "--no-bootstrap exits 2"
+  else
+    fail "--no-bootstrap exited $rc, expected 2"
+  fi
+fi
+assert_contains "explains --no-bootstrap" "$TEST_DIR/t16-out.txt" "--no-bootstrap"
+assert_not_contains "no bootstrap attempted" "$LOG" "workspace create"
 
 echo
 if [ "$FAIL" -eq 0 ]; then

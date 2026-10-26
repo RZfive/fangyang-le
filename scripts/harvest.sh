@@ -88,7 +88,7 @@ for name in "${AGENTS[@]}"; do
   mws="$(manifest_ws "$name")"
   if [[ -n "$mws" ]]; then
     if [[ -z "${HERDR_WORKSPACE_ID:-}" ]]; then
-      echo "warn: manifest says workspace $mws, but HERDR_WORKSPACE_ID is unset here" >&2
+      echo "note: external shell — flock lives in workspace $mws (from manifest); harvesting via the herdr socket works from anywhere" >&2
     elif [[ "$mws" != "$HERDR_WORKSPACE_ID" ]]; then
       echo "warn: agent '$name' lives in workspace $mws, this shell is in $HERDR_WORKSPACE_ID — cross-workspace harvest; re-run from the workspace that started the flock" >&2
     fi
