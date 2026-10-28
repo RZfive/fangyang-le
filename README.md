@@ -114,4 +114,4 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
 ## 友链
 
-- [LINUX DO](https://linux.do/) — 正确的下载姿势
+- [LINUX DO](https://linux.do/)
