@@ -111,3 +111,7 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 - 不要写死任何本地固定路径。
 - 所有脚本都从自身所在目录解析路径。
 - `herdr --skill` 可查看当前版本的 herdr AI 控制说明。
+
+## 友链
+
+- [LINUX DO](https://linux.do/) — 正确的下载姿势
