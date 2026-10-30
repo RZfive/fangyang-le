@@ -19,11 +19,12 @@ Options:
   --lines N      Read the last N lines (default: 160)
   --manifest P   Read agent names from a fanout manifest (tab-separated; column 4 = workspace)
   --close        Close each agent's pane after reading (use after review; panes stay open by default)
-  --close-tab    Close the whole sheepfold tab(s) from the manifest after reading
-                 (use only after the user has reviewed and confirmed); also
-                 restores the controller tab's original label recorded by fanout
-                 (#controller_tab_* metadata; old manifests without it are skipped)
-  -h, --help     Show this help
+  --close-tab    Close the whole sheepfold after reading (use only after the user
+                 has reviewed and confirmed). Tab mode: close the pen tab(s) and
+                 restore the controller tab label recorded by fanout. In-tab mode
+                 (#mode=in-tab): close only the worker panes — the manager's own
+                 pane and tab stay alive so it can report.
+
 EOF
 }
 
@@ -144,7 +145,9 @@ if (( CLOSE == 0 && CLOSE_TAB == 0 )); then
   fi
 fi
 
-# --close-tab: close the whole sheepfold tab(s), skipped if any agent is still working
+# --close-tab: tear the fold down, skipped if any agent is still working.
+# Tab mode closes the pen tab(s); in-tab mode closes worker panes only, because
+# the tab belongs to the manager and must survive to write its report.
 if (( CLOSE_TAB == 1 )); then
   if [[ -z "$MANIFEST" ]]; then
     echo "--close-tab needs --manifest (no tab ids available)" >&2
@@ -152,21 +155,32 @@ if (( CLOSE_TAB == 1 )); then
   elif (( ANY_WORKING == 1 )); then
     echo "skip close-tab: at least one agent is still working" >&2
   else
-    for t in $(awk -F'\t' 'NR>1 && $3!="" {print $3}' "$MANIFEST" | sort -u); do
-      if herdr tab close "$t" >/dev/null 2>&1; then
-        echo "closed tab: $t"
-      else
-        echo "warn: could not close tab $t" >&2
-      fi
-    done
-    # Restore the controller tab's original label (renamed by fanout).
-    ctrl_id="$(manifest_meta controller_tab_id)"
-    ctrl_label="$(manifest_meta controller_tab_label)"
-    if [[ -n "$ctrl_id" && -n "$ctrl_label" ]]; then
-      if herdr tab rename "$ctrl_id" "$ctrl_label" >/dev/null 2>&1; then
-        echo "restored controller tab label: $ctrl_id -> '$ctrl_label'"
-      else
-        echo "warn: closed the fold but could not restore controller tab $ctrl_id label '$ctrl_label'" >&2
+    MODE="$(manifest_meta mode)"
+    if [[ "$MODE" == "in-tab" ]]; then
+      for p in $(awk -F'\t' 'NR>1 && $2!="" {print $2}' "$MANIFEST" | sort -u); do
+        if herdr pane close "$p" >/dev/null 2>&1; then
+          echo "closed worker pane: $p"
+        else
+          echo "warn: could not close worker pane $p" >&2
+        fi
+      done
+    else
+      for t in $(awk -F'\t' 'NR>1 && $3!="" {print $3}' "$MANIFEST" | sort -u); do
+        if herdr tab close "$t" >/dev/null 2>&1; then
+          echo "closed tab: $t"
+        else
+          echo "warn: could not close tab $t" >&2
+        fi
+      done
+      # Restore the controller tab's original label (renamed by fanout).
+      ctrl_id="$(manifest_meta controller_tab_id)"
+      ctrl_label="$(manifest_meta controller_tab_label)"
+      if [[ -n "$ctrl_id" && -n "$ctrl_label" ]]; then
+        if herdr tab rename "$ctrl_id" "$ctrl_label" >/dev/null 2>&1; then
+          echo "restored controller tab label: $ctrl_id -> '$ctrl_label'"
+        else
+          echo "warn: closed the fold but could not restore controller tab $ctrl_id label '$ctrl_label'" >&2
+        fi
       fi
     fi
   fi

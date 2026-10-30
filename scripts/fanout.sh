@@ -15,7 +15,9 @@ TASKS=""
 FOCUS=0
 WORKSPACE="${HERDR_WORKSPACE_ID:-}"
 TASKS_DIR=""
+IN_TAB=0
 BOOTSTRAP=1
+
 
 usage() {
   cat <<'EOF'
@@ -43,18 +45,19 @@ Options:
                    exact-name collisions
   --cwd PATH       Working directory for the tab (default: current directory)
   --tasks-dir PATH Directory for task files + manifest (default: <cwd>/.fangyang).
-                   Keeping task files inside the repo avoids per-agent /tmp permission
-                   prompts; the directory is auto-added to .gitignore when possible.
+                   A relative PATH is resolved against --cwd, never against the
+                   caller's PWD, so a sub-level manager always writes task files
+                   into the pen it was told to use. Keeping task files inside the
+                   repo avoids per-agent /tmp permission prompts; the directory is
+                   auto-added to .gitignore when possible.
   --prefix NAME    Fallback agent name base (default: worker; also owner-prefixed)
+  --in-tab         Grow the flock INSIDE the caller's current tab: workers become
+                   sibling panes next to the caller's own pane (the caller keeps
+                   its pane) instead of opening a new tab. This is how a Manager
+                   stacks its own Workers without leaving its own tab. The
+                   manifest records "#mode=in-tab" and harvest --close-tab then
+                   closes only the worker panes, never the Manager's tab.
   --focus          Focus the new tab after creation
-  --workspace ID   herdr workspace id (default: this pane's $HERDR_WORKSPACE_ID;
-                   passing a different id is a deliberate cross-workspace override
-                   and prints a warning)
-  --no-bootstrap   Outside a herdr pane (no $HERDR_WORKSPACE_ID): fail fast
-                   instead of auto-installing herdr, starting the headless
-                   server, and creating a dedicated ranch workspace (default:
-                   bootstrap; see "external fanout" in SKILL.md)
-  -h, --help       Show this help
 EOF
 }
 
@@ -70,23 +73,30 @@ while [[ $# -gt 0 ]]; do
     --tasks-dir) TASKS_DIR="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     --focus) FOCUS=1; shift ;;
+    --in-tab) IN_TAB=1; shift ;;
     --workspace) WORKSPACE="$2"; shift 2 ;;
     --no-bootstrap) BOOTSTRAP=0; shift ;;
-    -h|--help) usage; exit 0 ;;
+
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
 
-if ! [[ "$COUNT" =~ ^[0-9]+$ ]] || (( COUNT < 2 || COUNT > 8 )); then
-  echo "--count must be 2-8" >&2
-  exit 2
-fi
 if [[ ! -d "$CWD" ]]; then
   echo "--cwd is not a directory: $CWD" >&2
   exit 2
 fi
+# Absolute cwd: every downstream path (task dir, manifest, prompts) becomes
+# independent of the caller's PWD, which is what a sub-level manager needs.
+CWD="$(cd "$CWD" && pwd)"
 WORK="${WORK:-并行任务}"
 
+if (( IN_TAB == 1 )); then
+  if [[ -z "${HERDR_PANE_ID:-}" || -z "${HERDR_TAB_ID:-}" ]]; then
+    echo "--in-tab needs a herdr pane: HERDR_PANE_ID/HERDR_TAB_ID are unset." >&2
+    echo "Run it from the manager's own pane (inside herdr)." >&2
+    exit 2
+  fi
+fi
 TASK_NAMES=()
 if [[ -n "$TASKS" ]]; then
   IFS=',' read -r -a TASK_NAMES <<< "$TASKS"
@@ -148,17 +158,33 @@ western_slug() {
   esac
 }
 
+# Walks the string BYTE-WISE and never consults the locale. A pure-Chinese name
+# therefore yields an EMPTY slug instead of a constant placeholder, so callers
+# must pass a fallback through slug_or; the old behaviour collapsed every
+# Chinese task name in one flock onto the same agent name.
 ascii_slug() {
   local s out ch j
-  s="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  s="${s// /-}"
+  s="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
   out=""
   for ((j = 0; j < ${#s}; j++)); do
     ch="${s:j:1}"
-    if [[ "$ch" == [a-z0-9-] ]]; then out+="$ch"; fi
+    case "$ch" in
+      [a-z0-9]) out+="$ch" ;;
+      ' '|-|_|.|/|:|=|,) out+="-" ;;
+      *) ;;                      # high byte of a multibyte char: drop
+    esac
   done
-  out="${out:-herd}"
+  while [[ "$out" == *--* ]]; do out="${out//--/-}"; done
+  out="${out#-}"
+  out="${out%-}"
   printf '%s' "${out:0:32}"
+}
+
+slug_or() {
+  # $1 = text, $2 = fallback used when the text has no ASCII alphanumerics
+  local s
+  s="$(ascii_slug "$1")"
+  printf '%s' "${s:-$2}"
 }
 
 owner_agent_prefix() {
@@ -166,7 +192,7 @@ owner_agent_prefix() {
   if slug="$(western_slug "$1")"; then
     printf '%s' "$slug"
   else
-    ascii_slug "$1"
+    slug_or "$1" herd
   fi
 }
 
@@ -261,6 +287,9 @@ if [[ -z "$TASKS_DIR" ]]; then
   TASKS_DIR="$CWD/.fangyang"
 fi
 mkdir -p "$TASKS_DIR"
+# Resolve a relative --tasks-dir against --cwd (never the caller's PWD).
+TASKS_DIR="$(cd "$TASKS_DIR" && pwd)"
+
 if [[ -d "$CWD/.git" ]] && ! grep -qs '^\.fangyang/$' "$CWD/.gitignore" 2>/dev/null; then
   printf '\n# fangyang (放羊) task files and manifests\n.fangyang/\n' >> "$CWD/.gitignore"
   echo "gitignore: added .fangyang/ to $CWD/.gitignore"
@@ -293,13 +322,31 @@ except Exception:
   fi
 fi
 LABEL="${LABEL:-${OWNER}的羊圈 · ${WORK}}"
+if (( IN_TAB == 1 )); then
+  LABEL="${LABEL:-${OWNER} · ${WORK}}"
+fi
 
 MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-agents.tsv"
 FOCUS_FLAG="--no-focus"
 if (( FOCUS == 1 )); then FOCUS_FLAG="--focus"; fi
-TAB_JSON="$(herdr tab create --workspace "$WORKSPACE" --cwd "$CWD" --label "$LABEL" "$FOCUS_FLAG")"
-ROOT_PANE="$(printf '%s' "$TAB_JSON" | json_get result root_pane pane_id)"
-TAB_ID="$(printf '%s' "$TAB_JSON" | json_get result tab tab_id)"
+
+# Mode marker, written as manifest metadata ("#" lines are skipped by harvest).
+MODE_META="#mode=tab"
+if (( IN_TAB == 1 )); then
+  MODE_META="#mode=in-tab"
+  # Workers become siblings of the caller's own pane inside the caller's tab.
+  # No new tab is created and the caller's tab is NOT renamed: that tab is the
+  # manager's own workspace, and harvest --close-tab must only remove the
+  # worker panes, never the manager's tab.
+  TAB_ID="$HERDR_TAB_ID"
+  ANCHOR_PANE="$HERDR_PANE_ID"
+else
+  TAB_JSON="$(herdr tab create --workspace "$WORKSPACE" --cwd "$CWD" --label "$LABEL" "$FOCUS_FLAG")"
+  ROOT_PANE="$(printf '%s' "$TAB_JSON" | json_get result root_pane pane_id)"
+  TAB_ID="$(printf '%s' "$TAB_JSON" | json_get result tab tab_id)"
+  ANCHOR_PANE="$ROOT_PANE"
+fi
+
 
 # Isolation guard: never overwrite another flock's manifest. If the same
 # owner+work combination already produced a manifest in this tasks dir, the
@@ -312,10 +359,11 @@ fi
 # Rule 4b: rename the controller's own tab to "<owner> · <work>" so it pairs
 # with the pen; the original label is stored in the manifest as
 # "#controller_tab_*" metadata so harvest --close-tab can restore it.
+# In-tab mode skips this: the caller's tab IS the pen.
 CTRL_RENAMED=0
 CTRL_TAB_META_ID=""
 CTRL_TAB_META_LABEL=""
-if [[ -n "${HERDR_TAB_ID:-}" ]] && [[ -n "$CTRL_TAB_ORIG" ]]; then
+if (( IN_TAB == 0 )) && [[ -n "${HERDR_TAB_ID:-}" ]] && [[ -n "$CTRL_TAB_ORIG" ]]; then
   if herdr tab rename "$HERDR_TAB_ID" "${OWNER} · ${WORK}" >/dev/null 2>&1; then
     CTRL_RENAMED=1
     CTRL_TAB_META_ID="#controller_tab_id=${HERDR_TAB_ID}"
@@ -325,25 +373,46 @@ if [[ -n "${HERDR_TAB_ID:-}" ]] && [[ -n "$CTRL_TAB_ORIG" ]]; then
   fi
 fi
 
-COLS=$(( (COUNT + 1) / 2 ))
-TOP_PANES=("$ROOT_PANE")
-for ((i = 1; i < COLS; i++)); do
-  NEXT="$(herdr pane split "${TOP_PANES[$((i - 1))]}" --direction right --cwd "$CWD" --no-focus | json_get result pane pane_id)"
-  TOP_PANES+=("$NEXT")
-done
-
-PANES=("${TOP_PANES[@]}")
-BOTTOM_NEEDED=$(( COUNT - COLS ))
-for ((i = 0; i < BOTTOM_NEEDED; i++)); do
-  NEXT="$(herdr pane split "${TOP_PANES[$i]}" --direction down --cwd "$CWD" --no-focus | json_get result pane pane_id)"
-  PANES+=("$NEXT")
-done
+# Grid layout. Tab mode: the new tab's root pane is the first slot. In-tab mode:
+# the caller's own pane is the first slot (it stays as the manager's pane), so the
+# worker panes grow around it.
+if (( IN_TAB == 1 )); then
+  SLOTS=$(( COUNT + 1 ))
+  COLS=$(( (SLOTS + 1) / 2 ))
+  TOP_PANES=("$ANCHOR_PANE")
+  for ((i = 1; i < COLS; i++)); do
+    NEXT="$(herdr pane split "${TOP_PANES[$((i - 1))]}" --direction right --cwd "$CWD" --no-focus | json_get result pane pane_id)"
+    TOP_PANES+=("$NEXT")
+  done
+  PANES=()
+  for ((i = 1; i < ${#TOP_PANES[@]}; i++)); do PANES+=("${TOP_PANES[$i]}"); done
+  BOTTOM_NEEDED=$(( SLOTS - COLS ))
+  for ((i = 0; i < BOTTOM_NEEDED; i++)); do
+    NEXT="$(herdr pane split "${TOP_PANES[$i]}" --direction down --cwd "$CWD" --no-focus | json_get result pane pane_id)"
+    PANES+=("$NEXT")
+  done
+else
+  COLS=$(( (COUNT + 1) / 2 ))
+  TOP_PANES=("$ANCHOR_PANE")
+  for ((i = 1; i < COLS; i++)); do
+    NEXT="$(herdr pane split "${TOP_PANES[$((i - 1))]}" --direction right --cwd "$CWD" --no-focus | json_get result pane pane_id)"
+    TOP_PANES+=("$NEXT")
+  done
+  PANES=("${TOP_PANES[@]}")
+  BOTTOM_NEEDED=$(( COUNT - COLS ))
+  for ((i = 0; i < BOTTOM_NEEDED; i++)); do
+    NEXT="$(herdr pane split "${TOP_PANES[$i]}" --direction down --cwd "$CWD" --no-focus | json_get result pane pane_id)"
+    PANES+=("$NEXT")
+  done
+fi
 
 printf 'name\tpane\ttab\tworkspace\n' > "$MANIFEST"
 # "#"-prefixed metadata lines are ignored by harvest's TSV parser.
+printf '%s\n' "$MODE_META" >> "$MANIFEST"
 if [[ -n "$CTRL_TAB_META_ID" ]]; then
   printf '%s\n%s\n' "$CTRL_TAB_META_ID" "$CTRL_TAB_META_LABEL" >> "$MANIFEST"
 fi
+
 
 KIND_SRC="explicit"
 if (( KIND_AUTO )); then KIND_SRC="same as controller"; fi
@@ -377,9 +446,11 @@ agent_name_taken() {
 
 for ((i = 0; i < COUNT; i++)); do
   if (( ${#TASK_NAMES[@]} > 0 )); then
-    BASE="${OWNER_PREFIX}-$(ascii_slug "${TASK_NAMES[$i]}")"
+    # Chinese task names slug to "" — fall back to task<N> so two Chinese
+    # names in one flock stay distinct instead of both becoming "<owner>-task".
+    BASE="${OWNER_PREFIX}-$(slug_or "${TASK_NAMES[$i]}" "task$((i + 1))")"
   else
-    BASE="${OWNER_PREFIX}-${PREFIX}-$((i + 1))"
+    BASE="${OWNER_PREFIX}-$(slug_or "$PREFIX" worker)-$((i + 1))"
   fi
   BASE="$(ascii_slug "$BASE")"
   NAME="$BASE"

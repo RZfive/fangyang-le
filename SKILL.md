@@ -1,6 +1,6 @@
 ---
 name: fangyang-le
-description: 放羊了 —— 用 herdr 并行放养多个 coding agent（Codex / Claude Code / OpenCode / Gemini / Cursor / Copilot / Qwen / Kimi / Droid 等）。当用户要求“多开 agent / 并发做 / 分工 / 放羊 / 快速并行推进”，或任务可以按文件或模块拆成多个独立 workstream 时使用。主控负责拆任务、开 pane、派发、处理权限、收割结果、统一验证和 checkpoint；agent 不提交代码。
+description: 放羊了 —— 用 herdr 并行放养多个 coding agent（Codex / Claude Code / OpenCode / Gemini / Cursor / Copilot / Qwen / Kimi / Droid 等）。当用户要求“多开 agent / 并发做 / 分工 / 放羊 / 快速并行推进”，或任务可以按文件或模块拆成多个独立 workstream 时使用；超大任务（10+ 工作单元）用“界王拳模式”——主控 → 2–6 个 Manager（各占一个 tab）→ 每个 Manager 再用 fanout 开 2–6 个 Worker（最多 36 个并行）。主控负责拆任务、开 pane、派发、处理权限、收割结果、统一验证和 checkpoint；agent 不提交代码。
 ---
 
 # 放羊了
@@ -69,6 +69,54 @@ rm -rf /tmp/fangyang-le
 7. 从**同一个 workspace** 收割结果（**不带 `--close`，羊圈保留**），主控跑门禁。
 8. 汇报（含各羊完成情况），并提示用户：羊圈还开着，可自行查看。
 9. 用户确认审查完毕后，再关闭羊圈；用户明确要求时才 commit。
+
+## 界王拳模式（三层编排，七龙珠命名）
+
+单层放羊适合 2–6 个独立任务；当一个任务需要 **10 个以上工作单元**、且能干净地分成几个互不重叠的大模块时，用三层编排：
+
+```text
+🥇 一线主角（孙悟空/贝吉塔…）主控
+  └─ 🥈 二线战士（克林/天津饭/乌龙…）Manager ×2–6，每人占一个 tab
+       └─ 🥉 三线小兵（龟仙人弟子/红丝带兵…）Worker ×2–6，在 Manager 的 tab 里排网格
+```
+
+一句话：**主控 → Manager 用 fanout 开圈 → Manager 在自己的 tab 里再用 fanout 开 Worker**，最多 1 + 6 + 36 个 agent 同时跑。
+
+### 什么时候值得开
+
+| 场景 | 加速 | 建议 |
+|---|---|---|
+| 全栈项目（前后端/数据库/文档互不重叠） | 3–5× | ✅ 开 |
+| 长篇报告（章节独立） | 2–3× | ✅ 开 |
+| 有依赖（前端等后端 API） | 1.5–2× | ⚠️ 谨慎，需先定接口契约 |
+| 高度耦合（共享 `types.ts`/`package.json`） | 可能更慢 | ❌ 不开 |
+| 小任务（< 30 分钟） | 0.3–0.5× | ❌ 不开 |
+
+协调成本约 15–30 分钟（分解 + 派发 + 收割 + 返工），所以**任务总时长低于 1 小时不要上三层**。
+
+### 怎么开
+
+```bash
+"$SKILL_DIR/scripts/kaio-ken-orchestrate.sh" \
+  --request "开发全栈 AI 聊天应用（React + FastAPI + DB + 部署文档）" \
+  --max-managers 4 \
+  --max-workers-per-manager 3 \
+  --cwd "$PWD"
+```
+
+脚本会：建**专属 workspace**（`界王拳 · <任务名>`，不碰主控原有工作区）→ 分解为 Manager 任务 → 用 `fanout.sh` 每个 Manager 开一个 tab → 派发任务 → Loop 监控 → 收割聚合报告。
+
+### 三层下的铁律补充
+
+- **每个 Manager 一个 tab**：Manager 是那个 tab 的主控 pane，Worker 在它右侧网格；用户一眼能看清「谁在带哪群人」。
+- **workspace 隔离**：界王拳的所有 tab 都在它自己的 workspace 里，主控不跟 Manager 抢 pane。
+- **Manager 必须用 fanout.sh 起 Worker**，不要用 spawn_subagents 之类的裸调用——否则 Worker 没有 pane、用户看不见、也没法用 `agent read` 收割。
+- **Manager 内的分片同样遵守文件不重叠**：热文件只在主控或单个 Manager 手里；跨 Manager 的接口契约先写进任务文件再开工。
+- **Manager 收割 Worker 时不关 pane**（不带 `--close`），保留现场待审；整圈关闭由主控在用户确认后统一做。
+
+### 角色命名
+
+主控/Manager/Worker 的名字分别从一线/二线/三线角色池分配，见 `lib/dbz-characters.sh`。命名只是趣味层，职责边界仍是「主控 - Manager - Worker」；撞名自动加 `-2/-3` 后缀。完整说明见 `KAIO_KEN_DBZ_THEME.md`。
 
 ## Herdr 常用命令速查
 
@@ -549,6 +597,11 @@ git commit -m "<type>(<scope>): <summary>"
 
 - `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent；同步把主控 tab 改名 `<owner> · <work>`；在 herdr pane 外执行时自动 bootstrap（装 herdr、起 headless server、建专属牧场 workspace），`--no-bootstrap` 可关闭
 - `scripts/ensure-herdr.sh`：确保 herdr CLI 与 headless `herdr server` 可用（已有则复用、缺失则安装/拉起），幂等；供 fanout.sh 外部模式调用，也可单独执行
+- `scripts/kaio-ken-orchestrate.sh`：界王拳三层编排入口——建专属 workspace、分解 Manager 任务、逐个 fanout 开圈、派发、Loop 监控、聚合报告
+- `lib/decompose.sh`：按任务类型（code/report/design/mixed）给出 Manager 分片建议
+- `lib/dbz-characters.sh`：三线七龙珠角色名池（主控/Manager/Worker 命名，含去重）
+- `templates/manager-task.md`：Manager 任务模板（七个步骤，重点说明「在自己的 tab 里用 fanout.sh 起 Worker」）
+- `templates/worker-task.md`：Worker 任务模板（write scope / 验收 / 越界自查）
 - `tests/run-tests.sh`：离线 stub 测试（伪 herdr CLI），覆盖 fanout/harvest 的主控 tab 配对行为
 - `install.sh`：安装到 `~/.agents/skills/fangyang-le` 并链接到 agent skill 目录
 - `bootstrap.sh`：从 GitHub 克隆后自动安装

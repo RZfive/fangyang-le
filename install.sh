@@ -44,9 +44,17 @@ install_files() {
   if [[ -f "$src/README.md" ]]; then cp "$src/README.md" "$dest/README.md"; fi
   if [[ -f "$src/bootstrap.sh" ]]; then cp "$src/bootstrap.sh" "$dest/bootstrap.sh"; fi
   if [[ -f "$src/uninstall.sh" ]]; then cp "$src/uninstall.sh" "$dest/uninstall.sh"; fi
-  mkdir -p "$dest/scripts" "$dest/templates"
+  mkdir -p "$dest/scripts" "$dest/templates" "$dest/lib"
   cp "$src"/scripts/*.sh "$dest/scripts/"
   cp "$src"/templates/*.md "$dest/templates/"
+  if compgen -G "$src/lib/*.sh" >/dev/null; then
+    cp "$src"/lib/*.sh "$dest/lib/"
+    chmod +x "$dest"/lib/*.sh
+  fi
+  # 界王拳模式的说明文档跟着 skill 一起走，SKILL.md 里引用到它们
+  if compgen -G "$src/KAIO_KEN*.md" >/dev/null; then
+    cp "$src"/KAIO_KEN*.md "$dest/"
+  fi
   chmod +x "$dest/install.sh" "$dest"/scripts/*.sh
   if [[ -f "$dest/bootstrap.sh" ]]; then chmod +x "$dest/bootstrap.sh"; fi
   if [[ -f "$dest/uninstall.sh" ]]; then chmod +x "$dest/uninstall.sh"; fi

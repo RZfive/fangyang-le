@@ -64,6 +64,10 @@ git push -u origin main
 
 ## 快速使用
 
+### 普通放羊（单层）
+
+适合 2-6 个独立任务的并行执行：
+
 ```bash
 SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
 
@@ -72,6 +76,46 @@ SKILL_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}/fangyang-le"
   --work "P2 补齐" \
   --tasks lsp,ui,bench,docs
 ```
+
+### 🥋 界王拳模式（七龙珠三层架构）
+
+适合超大型任务（10+ 个工作单元）的分层并行编排，采用七龙珠主题的角色命名：
+
+```bash
+"$SKILL_DIR/scripts/kaio-ken-orchestrate.sh" \
+  --request "开发全栈 AI 聊天应用（前端 React + 后端 FastAPI + 数据库 + 部署文档）" \
+  --max-managers 4 \
+  --max-workers-per-manager 3 \
+  --cwd "$PWD"
+```
+
+**界王拳模式架构：**
+
+```
+🥇 一线主角（孙悟空）：主 Agent
+  ├─ 🥈 二线战士（克林、天津饭、乌龙...）：2-6 个 Manager
+  │  ├─ 🥉 三线小兵（龟仙人弟子...）：每个 Manager 下 2-6 个 Worker
+  │  └─ ...
+  ├─ 🥈 二线战士：...
+  │  ├─ 🥉 三线小兵：...
+  │  └─ ...
+  └─ ...
+```
+
+**核心特点：**
+- 🥇 一线主角（孙悟空、贝吉塔等）：主 Agent，掌控全局
+- 🥈 二线战士（克林、天津饭等）：Manager Agent，各自指挥一支 Worker 队伍
+- 🥉 三线小兵（龟仙人弟子等）：Worker Agent，执行具体任务
+- 专属 workspace：界王拳独占一个 workspace，不影响主控原有工作区
+- 一个 Manager = 一个 Tab：每个 Manager 在自己的 tab 里用 fanout.sh 启动 Worker
+- 自动分层分片：根据任务类型（代码/报告/设计）自动分解，按不冲突的区间分配
+- Loop 管理：主 Agent 持续监控所有 Manager，处理阻塞/失败
+- 最多 36 个并发 Agent：1 主 + 6 Manager + 6×6 Worker
+
+**详细文档与例子：**
+- 完整使用指南：[KAIO_KEN_DBZ_THEME.md](KAIO_KEN_DBZ_THEME.md)（七龙珠主题说明）
+- 实现细节：[KAIO_KEN_V3.md](KAIO_KEN_V3.md)
+- 快速参考：[KAIO_KEN_QUICK_REF.md](KAIO_KEN_QUICK_REF.md)
 
 默认行为（可省略的都省了）：
 
