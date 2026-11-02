@@ -17,6 +17,10 @@ WORKSPACE="${HERDR_WORKSPACE_ID:-}"
 TASKS_DIR=""
 IN_TAB=0
 BOOTSTRAP=1
+# 界王拳层级关联：Manager/Worker 的父级和一线根角色。
+DBZ_PARENT=""
+DBZ_ROOT=""
+NO_CONTROLLER_RENAME=0
 
 
 usage() {
@@ -58,9 +62,14 @@ Options:
                    manifest records "#mode=in-tab" and harvest --close-tab then
                    closes only the worker panes, never the Manager's tab.
   --focus          Focus the new tab after creation
+  --no-controller-rename
+                   Do not rename the caller's tab (界王拳为每个 Manager 单独开 Tab 时使用)
   --dbz-tier TIER  界王拳专用命名：manager 用二线角色、worker 用三线角色。
                    仅界王拳传此参数；普通放羊继续使用西部牛仔命名。
-  --dbz-owner NAME 界王拳主 Agent 的一线主角名（供同一任务的 Manager/Worker 使用）
+  --dbz-owner NAME 界王拳当前角色名：Manager 传一线主角，Worker 传所属 Manager。
+  --dbz-parent NAME
+                   界王拳直接上级角色 slug（Worker 名称会带此前缀）。
+  --dbz-root NAME  界王拳一线主角 slug，用于 workspace/Tab/manifest 追溯。
 EOF
 }
 
@@ -71,14 +80,19 @@ while [[ $# -gt 0 ]]; do
     --label) LABEL="$2"; shift 2 ;;
     --owner) OWNER="$2"; shift 2 ;;
     --work) WORK="$2"; shift 2 ;;
-    --tasks) TASKS="$2"; shift 2 ;;
     --cwd) CWD="$2"; shift 2 ;;
+    --tasks) TASKS="$2"; shift 2 ;;
     --tasks-dir) TASKS_DIR="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
+
     --focus) FOCUS=1; shift ;;
+
+    --no-controller-rename) NO_CONTROLLER_RENAME=1; shift ;;
     --in-tab) IN_TAB=1; shift ;;
     --dbz-tier) DBZ_TIER="$2"; shift 2 ;;
     --dbz-owner) DBZ_OWNER="$2"; shift 2 ;;
+    --dbz-parent) DBZ_PARENT="$2"; shift 2 ;;
+    --dbz-root) DBZ_ROOT="$2"; shift 2 ;;
     --workspace) WORKSPACE="$2"; shift 2 ;;
 
     --no-bootstrap) BOOTSTRAP=0; shift ;;
@@ -88,8 +102,23 @@ while [[ $# -gt 0 ]]; do
 done
 DBZ_TIER="${DBZ_TIER:-}"
 DBZ_OWNER="${DBZ_OWNER:-}"
+DBZ_PARENT="${DBZ_PARENT:-}"
+DBZ_ROOT="${DBZ_ROOT:-}"
+DBZ_OWNER_SLUG=""
+DBZ_PARENT_SLUG=""
+DBZ_ROOT_SLUG=""
+DBZ_PARENT_DISPLAY=""
+DBZ_ROOT_DISPLAY=""
+
 if [[ -n "$DBZ_TIER" ]]; then
   source "$SCRIPT_DIR/../lib/dbz-characters.sh"
+  # 接受中文角色名或已经规范化的 ASCII slug，统一在 manifest 里记录 slug。
+  dbz_normalize_slug() {
+    local value="$1" normalized=""
+    normalized="$(dbz_agent_slug "$value" 2>/dev/null || true)"
+    [[ -n "$normalized" ]] || return 1
+    printf '%s' "$normalized"
+  }
   if [[ "$DBZ_TIER" != "manager" && "$DBZ_TIER" != "worker" ]]; then
     echo "--dbz-tier must be manager or worker" >&2
     exit 2
@@ -98,6 +127,30 @@ if [[ -n "$DBZ_TIER" ]]; then
     echo "--dbz-owner is required with --dbz-tier" >&2
     exit 2
   fi
+  if ! DBZ_OWNER_SLUG="$(dbz_normalize_slug "$DBZ_OWNER")"; then
+    echo "--dbz-owner must be a known DBZ character or ASCII slug" >&2
+    exit 2
+  fi
+  if [[ -n "$DBZ_ROOT" ]]; then
+    if ! DBZ_ROOT_SLUG="$(dbz_normalize_slug "$DBZ_ROOT")"; then
+      echo "--dbz-root must be a known DBZ character or ASCII slug" >&2
+      exit 2
+    fi
+  else
+    DBZ_ROOT_SLUG="$DBZ_OWNER_SLUG"
+  fi
+  if [[ -n "$DBZ_PARENT" ]]; then
+    if ! DBZ_PARENT_SLUG="$(dbz_normalize_slug "$DBZ_PARENT")"; then
+      echo "--dbz-parent must be a known DBZ character or ASCII slug" >&2
+      exit 2
+    fi
+  elif [[ "$DBZ_TIER" == "worker" ]]; then
+    DBZ_PARENT_SLUG="$DBZ_OWNER_SLUG"
+  else
+    DBZ_PARENT_SLUG="$DBZ_ROOT_SLUG"
+  fi
+  DBZ_ROOT_DISPLAY="$(dbz_agent_display_name "$DBZ_ROOT_SLUG")"
+  DBZ_PARENT_DISPLAY="$(dbz_agent_display_name "$DBZ_PARENT_SLUG")"
 fi
 
 if [[ ! -d "$CWD" ]]; then
@@ -361,13 +414,19 @@ except Exception:
   fi
 fi
 LABEL="${LABEL:-${OWNER}的羊圈 · ${WORK}}"
-if [[ "$DBZ_TIER" == "manager" ]]; then
-  LABEL="${OWNER}的界王拳 · ${WORK}"
-elif [[ "$DBZ_TIER" == "worker" ]]; then
-  LABEL="${OWNER}的三线小队 · ${WORK}"
+if [[ -n "$DBZ_TIER" ]]; then
+  # 界王拳 Tab 标签显式写出一线根角色与当前 Manager/父级角色。
+  if [[ "$DBZ_TIER" == "manager" ]]; then
+    LABEL="${DBZ_ROOT_DISPLAY}·${DBZ_PARENT_DISPLAY}的界王拳 · ${WORK}"
+  else
+    LABEL="${DBZ_ROOT_DISPLAY}·${DBZ_PARENT_DISPLAY}的界王拳 · ${WORK}"
+  fi
 fi
 if (( IN_TAB == 1 )); then
-  LABEL="${OWNER} · ${WORK}"
+  # 普通放羊保留原有“owner · work”；界王拳 Worker 保留父子链标签。
+  if [[ -z "$DBZ_TIER" ]]; then
+    LABEL="${OWNER} · ${WORK}"
+  fi
 fi
 
 MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-agents.tsv"
@@ -407,7 +466,7 @@ fi
 CTRL_RENAMED=0
 CTRL_TAB_META_ID=""
 CTRL_TAB_META_LABEL=""
-if (( IN_TAB == 0 )) && [[ -n "${HERDR_TAB_ID:-}" ]] && [[ -n "$CTRL_TAB_ORIG" ]]; then
+if (( IN_TAB == 0 )) && (( NO_CONTROLLER_RENAME == 0 )) && [[ -n "${HERDR_TAB_ID:-}" ]] && [[ -n "$CTRL_TAB_ORIG" ]]; then
   if herdr tab rename "$HERDR_TAB_ID" "${OWNER} · ${WORK}" >/dev/null 2>&1; then
     CTRL_RENAMED=1
     CTRL_TAB_META_ID="#controller_tab_id=${HERDR_TAB_ID}"
@@ -455,6 +514,9 @@ printf 'name\tpane\ttab\tworkspace\n' > "$MANIFEST"
 printf '%s\n' "$MODE_META" >> "$MANIFEST"
 if [[ -n "$DBZ_TIER" ]]; then
   printf '#dbz_tier=%s\n#dbz_owner=%s\n' "$DBZ_TIER" "$DBZ_OWNER" >> "$MANIFEST"
+  printf '#dbz_root=%s\n#dbz_root_display=%s\n' "$DBZ_ROOT_SLUG" "$DBZ_ROOT_DISPLAY" >> "$MANIFEST"
+  printf '#dbz_parent=%s\n#dbz_parent_display=%s\n' "$DBZ_PARENT_SLUG" "$DBZ_PARENT_DISPLAY" >> "$MANIFEST"
+  printf '#dbz_owner_slug=%s\n#dbz_tab_label=%s\n' "$DBZ_OWNER_SLUG" "$LABEL" >> "$MANIFEST"
   # 每次 fanout 重写映射表，避免上一次的残留条目混进本次角色名单。
   : > "$MANIFEST.dbz-names"
 fi
@@ -502,12 +564,19 @@ agent_name_taken() {
 
 for ((i = 0; i < COUNT; i++)); do
   if [[ -n "$DBZ_TIER" ]]; then
-    BASE="${TASK_NAMES[$i]:-}"
-    if [[ -z "$BASE" ]] || ! [[ "$BASE" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+    CHILD_SLUG="${TASK_NAMES[$i]:-}"
+    if [[ -z "$CHILD_SLUG" ]] || ! [[ "$CHILD_SLUG" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
       echo "Error: --dbz-tier requires explicit ASCII character slugs via --tasks" >&2
       exit 2
     fi
-    DISPLAY_NAME="$(dbz_agent_display_name "$BASE")"
+    if [[ "$DBZ_TIER" == "worker" ]]; then
+      # 三线运行名带直属 Manager 前缀：krillin-chichi；展示名仍只显示子角色。
+      BASE="${DBZ_PARENT_SLUG}-${CHILD_SLUG}"
+      DISPLAY_NAME="$(dbz_agent_display_name "$(dbz_base_slug "$CHILD_SLUG")")"
+    else
+      BASE="$CHILD_SLUG"
+      DISPLAY_NAME="$(dbz_agent_display_name "$(dbz_base_slug "$CHILD_SLUG")")"
+    fi
   elif (( ${#TASK_NAMES[@]} > 0 )); then
     # names in one flock stay distinct instead of both becoming "<owner>-task".
     BASE="${OWNER_PREFIX}-$(slug_or "${TASK_NAMES[$i]}" "task$((i + 1))")"

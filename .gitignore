@@ -1,1 +1,4 @@
 .DS_Store
+
+# fangyang (放羊) task files and manifests
+.fangyang/

@@ -40,6 +40,14 @@
 #   T25 --auto-mode 0 without a tty degrades to "continue" and logs it
 #   T26 KAIO_KEN_CONFIRM_ANSWERS=n aborts at the breakdown gate (exit 3)
 #   T27 the same variable lets the second gate (before Manager launch) abort
+#   T28 --spec must point at a readable, non-empty file; bad input exits 2
+#   T29 --max-goal-rounds is validated to 0-10
+#   T30 --spec becomes SPEC.md in the task dir and every Manager task cites it
+#   T31 Goal mode reworks failing rounds, writes a gap file, and stops at the cap
+#   T32 a long CJK request is truncated by characters (LC_ALL=C) so workspace
+#       labels, tab labels and manifest filenames stay valid UTF-8
+#   T33 Manager task files are named after DBZ role slugs and match
+#       .manager-map, the manifest and the display-name map one to one
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -489,13 +497,16 @@ mkdir -p "$TEST_DIR/repo18"
 : > "$LOG"
 bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo18" --count 3 \
   --owner 克林 --work 修炼 --dbz-tier worker --dbz-owner 克林 \
+  --dbz-parent 克林 --dbz-root 孙悟空 \
   --tasks chichi,dende,chichi > "$TEST_DIR/t18-out.txt" 2>&1
-assert_contains "worker uses chichi" "$LOG" "agent start chichi --kind claude"
-assert_contains "worker uses dende" "$LOG" "agent start dende --kind claude"
-assert_contains "duplicate gets suffix" "$LOG" "agent start chichi-2 --kind claude"
+assert_contains "worker keeps manager prefix" "$LOG" "agent start krillin-chichi --kind claude"
+assert_contains "worker uses dende with manager prefix" "$LOG" "agent start krillin-dende --kind claude"
+assert_contains "duplicate gets parent-prefixed suffix" "$LOG" "agent start krillin-chichi-2 --kind claude"
 T18_MANIFEST="$(find "$TEST_DIR/repo18/.fangyang" -name '*-agents.tsv' | head -n 1)"
-assert_contains "actual suffix mapped" "$T18_MANIFEST.dbz-names" $'chichi-2\t琪琪'
+assert_contains "actual suffix mapped" "$T18_MANIFEST.dbz-names" $'krillin-chichi-2\t琪琪'
 assert_contains "worker owner metadata" "$T18_MANIFEST" "#dbz_owner=克林"
+assert_contains "worker parent metadata" "$T18_MANIFEST" "#dbz_parent=krillin"
+assert_contains "worker root metadata" "$T18_MANIFEST" "#dbz_root=goku"
 
 echo "== T19: 界王拳显式 slug 校验，不用西部命名 =="
 mkdir -p "$TEST_DIR/repo19"
@@ -691,9 +702,206 @@ T27_TASK_DIR="$(ls -d "$WS27"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
 T27_ABORTS="$(grep -c '预设答案中止' "$T27_TASK_DIR/.decisions.log" 2>/dev/null || true)"
 [ "${T27_ABORTS:-0}" -eq 1 ] && pass "exactly one aborted decision recorded" \
   || fail "expected 1 aborted decision, got ${T27_ABORTS:-0}"
+echo "== T28: --spec 必须是可读且非空文件 =="
+mkdir -p "$TEST_DIR/kaio28"
+if bash "$KAIO" --request "测试" --cwd "$TEST_DIR/kaio28" \
+  --spec "$TEST_DIR/nope-spec.md" > "$TEST_DIR/t28a-out.txt" 2>&1; then
+  fail "missing --spec file should fail"
+else
+  [ "$?" -eq 2 ] && pass "missing --spec exits 2" || fail "missing --spec wrong exit"
+fi
+assert_contains "explains missing --spec" "$TEST_DIR/t28a-out.txt" "--spec is not a readable file"
+: > "$TEST_DIR/empty-spec.md"
+if bash "$KAIO" --request "测试" --cwd "$TEST_DIR/kaio28" \
+  --spec "$TEST_DIR/empty-spec.md" > "$TEST_DIR/t28b-out.txt" 2>&1; then
+  fail "empty --spec should fail"
+else
+  [ "$?" -eq 2 ] && pass "empty --spec exits 2" || fail "empty --spec wrong exit"
+fi
+assert_contains "explains empty --spec" "$TEST_DIR/t28b-out.txt" "--spec file is empty"
+if [ -d "$TEST_DIR/kaio28/.fangyang" ]; then
+  fail "--spec validation must not create .fangyang"
+else
+  pass "--spec validation leaves cwd untouched"
+fi
+
+echo "== T29: --max-goal-rounds 边界校验 =="
+for bad in 11 abc -1; do
+  if bash "$KAIO" --request "测试" --cwd "$TEST_DIR/kaio28" \
+    --max-goal-rounds "$bad" > "$TEST_DIR/t29-$bad-out.txt" 2>&1; then
+    fail "--max-goal-rounds $bad should fail"
+  else
+    [ "$?" -eq 2 ] && pass "--max-goal-rounds $bad exits 2" \
+      || fail "--max-goal-rounds $bad wrong exit"
+  fi
+done
+assert_contains "explains --max-goal-rounds" "$TEST_DIR/t29-11-out.txt" "--max-goal-rounds must be 0-10"
+
+echo "== T30: --spec 生效：复制成 SPEC.md 并作为唯一事实来源下发 =="
+WS30="$TEST_DIR/kaio30/ws"
+mkdir -p "$WS30"
+( cd "$WS30" && git init -q >/dev/null 2>&1 ) || true
+cat > "$TEST_DIR/spec30.md" <<'SPEC'
+# 需求规格（已和用户聊透）
+
+## 目标
+做一个只读的静态文档站。
+
+## 验收
+`true` 必须 exit 0。
+SPEC
+touch "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+if bash "$KAIO" --request "做一个静态文档站" --max-managers 2 \
+  --max-workers-per-manager 2 --auto-mode 1 --loop-interval 1 --max-loops 3 \
+  --cwd "$WS30" --spec "$TEST_DIR/spec30.md" --verify "true" \
+  > "$TEST_DIR/t30-out.txt" 2>&1; then
+  pass "--spec run exits 0"
+else
+  fail "--spec run failed"; tail -n 40 "$TEST_DIR/t30-out.txt"
+fi
+T30_TASK_DIR="$(ls -d "$WS30"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+assert_contains "spec copied into task dir" "$T30_TASK_DIR/SPEC.md" "已和用户聊透"
+assert_not_contains "spec draft not inferred over user spec" "$T30_TASK_DIR/SPEC.md" "未经用户确认"
+assert_contains "decision log records --spec" "$T30_TASK_DIR/.decisions.log" "使用 --spec 文件"
+assert_contains "spec path mention in output" "$TEST_DIR/t30-out.txt" "使用 --spec"
+T30_TASK_FILE="$(ls -1 "$T30_TASK_DIR"/*-task.md 2>/dev/null | head -n 1)"
+assert_contains "manager task points at spec" "$T30_TASK_FILE" "$T30_TASK_DIR/SPEC.md"
+assert_not_contains "manager task has no placeholder left" "$T30_TASK_FILE" "{{SPEC_PATH}}"
+assert_not_contains "manager task has no acceptance placeholder" "$T30_TASK_FILE" "{{ACCEPTANCE_"
 
 rm -f "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
 
+echo "== T31: Goal 模式自动返工，写缺口任务书并在轮数用尽后升级 =="
+# 验收命令始终失败 + 质量阈值 1.0 保证首轮质量门不通过，Goal 循环必然要跑。
+WS31="$TEST_DIR/kaio31/ws"
+mkdir -p "$WS31"
+( cd "$WS31" && git init -q >/dev/null 2>&1 ) || true
+touch "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+if bash "$KAIO" --request "开发一个全栈应用" --max-managers 2 \
+  --max-workers-per-manager 2 --auto-mode 1 --loop-interval 1 --max-loops 2 \
+  --quality 1.0 --max-goal-rounds 1 --cwd "$WS31" --verify "false" \
+  > "$TEST_DIR/t31-out.txt" 2>&1; then
+  fail "Goal run with failing verify should exit non-zero"
+else
+  [ "$?" -eq 1 ] && pass "failing gate exits 1 after Goal rounds" \
+    || fail "Goal run wrong exit"
+fi
+T31_TASK_DIR="$(ls -d "$WS31"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+assert_contains "goal round announced" "$TEST_DIR/t31-out.txt" "【Goal 模式】第 1/1 轮自动返工"
+assert_contains "gap file written" "$T31_TASK_DIR/GOAL-ROUND-1-GAPS.md" "必须补齐的缺口"
+assert_contains "gap file carries failing verify" "$T31_TASK_DIR/GOAL-ROUND-1-GAPS.md" "失败 (exit"
+assert_contains "rework dispatched to managers" "$TEST_DIR/t31-out.txt" "返工派发"
+assert_contains "round snapshot kept" "$T31_TASK_DIR/FINAL_REPORT-round-0.md" "界王拳任务完成汇报"
+assert_contains "escalation logged" "$T31_TASK_DIR/.decisions.log" "用尽 1 轮返工仍未通过"
+assert_contains "final report shows goal rounds" "$T31_TASK_DIR/FINAL_REPORT.md" "Goal 轮次: 1/1"
+
+echo "== T32: 中文需求的工作名按字符截断，不产生非法 UTF-8 =="
+# 回归点：bash 的 ${VAR:0:20} 在 LC_CTYPE=C 下按字节切中文，坏字节会写进
+# workspace 标签、tab 标签和 herdr-*-agents.tsv 文件名，最后在 printf 重定向处
+# 报 "Illegal byte sequence" 把整条编排打断。这里故意用 LC_ALL=C 复现原环境。
+WS32="$TEST_DIR/kaio32/ws"
+mkdir -p "$WS32"
+( cd "$WS32" && git init -q >/dev/null 2>&1 ) || true
+touch "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+LONG_CJK_REQUEST="开发一个支持多租户的智能客服工单系统并集成知识库检索与自动分派"
+if LC_ALL=C bash "$KAIO" --request "$LONG_CJK_REQUEST" --max-managers 2 \
+  --max-workers-per-manager 2 --auto-mode 1 --loop-interval 1 --max-loops 2 \
+  --cwd "$WS32" --verify "true" > "$TEST_DIR/t32-out.txt" 2>&1; then
+  pass "LC_ALL=C + CJK request runs to completion"
+else
+  fail "CJK request crashed under LC_ALL=C"; tail -n 20 "$TEST_DIR/t32-out.txt"
+fi
+assert_contains "work name keeps 20 full characters" "$TEST_DIR/t32-out.txt" \
+  "✓ 工作名: 开发一个支持多租户的智能客服工单系统并集…"
+assert_contains "workspace label uses the same work name" "$LOG" \
+  "界王拳 · 开发一个支持多租户的智能客服工单系统并集…"
+if python3 - "$LOG" <<'PY'
+import sys
+open(sys.argv[1], "rb").read().decode("utf-8")
+PY
+then
+  pass "recorded herdr calls are valid UTF-8"
+else
+  fail "invalid UTF-8 leaked into herdr calls"
+fi
+T32_MANIFEST="$(find "$WS32/.fangyang" -name '*-agents.tsv' | head -n 1)"
+if python3 - "$T32_MANIFEST" <<'PY'
+import sys
+open(sys.argv[1], "rb").read().decode("utf-8")
+PY
+then
+  pass "manifest filename and content are valid UTF-8"
+else
+  fail "manifest path/content is not valid UTF-8"
+fi
+
+rm -f "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
+
+echo "== T33: Manager 任务文件按角色 slug 命名，与 manager-map、manifest 三方一致 =="
+WS33="$TEST_DIR/kaio33/ws"
+mkdir -p "$WS33"
+( cd "$WS33" && git init -q >/dev/null 2>&1 ) || true
+touch "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+bash "$KAIO" --request "开发一个全栈 AI 聊天应用" --max-managers 2 \
+  --max-workers-per-manager 2 --auto-mode 1 --loop-interval 1 --max-loops 2 \
+  --cwd "$WS33" --verify "true" > "$TEST_DIR/t33-out.txt" 2>&1 || true
+T33_TASK_DIR="$(ls -d "$WS33"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+T33_MAP_COUNT="$(grep -c . "$T33_TASK_DIR/.manager-map" 2>/dev/null || true)"
+T33_TASK_COUNT="$(ls -1 "$T33_TASK_DIR"/*-task.md 2>/dev/null | grep -c . || true)"
+[ "${T33_MAP_COUNT:-0}" -eq 2 ] && pass "manager-map lists both modules" \
+  || fail "manager-map has ${T33_MAP_COUNT:-0} entries, expected 2"
+[ "${T33_TASK_COUNT:-0}" -eq 2 ] && pass "one task file per manager" \
+  || fail "found ${T33_TASK_COUNT:-0} task files, expected 2"
+# 每个 task 文件名必须就是一个七龙珠角色 slug（ASCII），且能反查中文展示名。
+if bash -c '
+  source "$1"; shift
+  for f in "$@"; do
+    slug="$(basename "$f" -task.md)"
+    [[ "$slug" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || exit 1
+    display="$(dbz_agent_display_name "$(dbz_base_slug "$slug")")"
+    [[ -n "$display" && "$display" != dbz-- ]] || exit 1
+  done
+' _ "$REPO_DIR/lib/dbz-characters.sh" "$T33_TASK_DIR"/*-task.md; then
+  pass "task files are named after real DBZ role slugs"
+else
+  fail "task file naming does not map back to DBZ roles"
+fi
+# 任务书里 Manager 拉起 Worker 必须走界王拳入口，不能退回西部 owner 前缀。
+T33_TASK_FILE="$(ls -1 "$T33_TASK_DIR"/*-task.md 2>/dev/null | head -n 1)"
+assert_contains "manager task tells workers to use worker tier" "$T33_TASK_FILE" "--dbz-tier worker"
+assert_contains "manager task passes its own display name as owner" "$T33_TASK_FILE" "--dbz-owner "
+assert_contains "manager task cites the roster script" "$T33_TASK_FILE" "dbz-roster.sh"
+assert_contains "output names managers as 二线战士" "$TEST_DIR/t33-out.txt" "二线战士"
+T33_MANIFESTS="$(find "$WS33/.fangyang" -name '*-agents.tsv' -print | sort)"
+T33_MANIFEST_COUNT="$(printf '%s\n' "$T33_MANIFESTS" | grep -c . || true)"
+[ "${T33_MANIFEST_COUNT:-0}" -eq 2 ] && pass "one independent manifest per manager tab" \
+  || fail "found ${T33_MANIFEST_COUNT:-0} manager manifests, expected 2"
+T33_MAP_TOTAL=0
+if [ "${T33_MANIFEST_COUNT:-0}" -eq 2 ]; then
+  while IFS= read -r manifest; do
+    [ -n "$manifest" ] || continue
+    map_file="${manifest}.dbz-names"
+    map_lines="$(wc -l < "$map_file" 2>/dev/null | tr -d ' ' || echo 0)"
+    if [ "${map_lines:-0}" -eq 1 ]; then
+      T33_MAP_TOTAL=$((T33_MAP_TOTAL + 1))
+    else
+      fail "${map_file} has ${map_lines:-0} entries, expected 1 for its manager"
+    fi
+  done <<< "$T33_MANIFESTS"
+fi
+[ "$T33_MAP_TOTAL" -eq 2 ] && pass "each manager manifest has its own dbz-names mapping" \
+  || fail "only ${T33_MAP_TOTAL}/2 manager mappings are isolated"
+
+
+rm -f "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "ALL TESTS PASSED"

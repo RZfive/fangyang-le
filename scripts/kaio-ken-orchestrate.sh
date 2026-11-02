@@ -3,10 +3,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 导入七龙珠角色命名库
 source "$SKILL_DIR/lib/dbz-characters.sh"
 
-# 默认参数
 REQUEST=""
 MAX_MANAGERS=4
 MAX_WORKERS_PER_MANAGER=3
@@ -16,7 +14,34 @@ QUALITY_THRESHOLD=0.85
 MAIN_AGENT_NAME=""
 LOOP_INTERVAL=30
 MAX_LOOPS=60
+SPEC_FILE=""
+# --verify 是可选项，但后面（SPEC 起草、验收、报告）都会读它；
+# 在 set -u 下不预置空串，只要用户没传就整条流水线在第 1 阶段崩掉。
 VERIFY_CMD=""
+MAX_GOAL_ROUNDS=2
+# 先初始化：收割函数会把「本轮 Goal 轮次」写进报告，首轮收割时
+# 主循环还没开始，不初始化会在 set -u 下直接报 unbound variable。
+GOAL_ROUND=0
+
+
+# 按「字符数」截断，而不是按字节截断。
+# bash 3.2 的 ${VAR:0:20} 在 LC_CTYPE=C 下按字节切，中文需求会被切在
+# 多字节字符中间，得到非法 UTF-8；这个坏字符串会被写进 workspace 标签、
+# tab 标签和 herdr-*-agents.tsv 文件名，最后在 printf 重定向处报
+# "Illegal byte sequence" 把整条编排打断。
+# 优先用 python3 做真正的字符级截断；没有 python3 时用 perl；都不可用
+# 才退回纯 ASCII 过滤，宁短不乱码。
+kaio_truncate_text() {
+  local text="$1" limit="${2:-20}"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import sys;sys.stdout.write(sys.argv[1][:int(sys.argv[2])])' "$text" "$limit" && return 0
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    perl -CSA -e 'print substr($ARGV[0],0,$ARGV[1])' -- "$text" "$limit" && return 0
+  fi
+  printf '%s' "$text" | LC_ALL=C tr -cd '[:alnum:][:space:]-_.'
+  return 0
+}
 
 
 usage() {
@@ -42,6 +67,10 @@ Options:
   --max-loops N               最多轮询多少轮，1-10000（默认：60）
   --verify CMD                最终验收命令，在 --cwd 下执行；exit 0 才算通过
                               （不传则质量门只靠报告覆盖率，报告会标注未运行）
+  --spec PATH                 主 Agent 与用户聊透后写好的需求规格 markdown
+                              不传则按请求推断一份草稿，并在报告里列出「未确认维度」
+  --max-goal-rounds N         Goal 模式：质量门不通过时最多自动返工几轮，0-10（默认：2）
+                              每轮把缺口重新派给 Manager，跑完再验收，直到通过或轮数用尽
   -h, --help                  显示帮助
 
 Example:
@@ -65,6 +94,8 @@ while [[ $# -gt 0 ]]; do
     --loop-interval) LOOP_INTERVAL="$2"; shift 2 ;;
     --max-loops) MAX_LOOPS="$2"; shift 2 ;;
     --verify) VERIFY_CMD="$2"; shift 2 ;;
+    --spec) SPEC_FILE="$2"; shift 2 ;;
+    --max-goal-rounds) MAX_GOAL_ROUNDS="$2"; shift 2 ;;
     --auto-mode) AUTO_MODE="$2"; shift 2 ;;
 
     -h|--help) usage; exit 0 ;;
@@ -105,9 +136,27 @@ if ! [[ "$QUALITY_THRESHOLD" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
   exit 2
 fi
 
+if ! [[ "$MAX_GOAL_ROUNDS" =~ ^[0-9]+$ ]] || (( MAX_GOAL_ROUNDS > 10 )); then
+  echo "Error: --max-goal-rounds must be 0-10" >&2
+  exit 2
+fi
+
 if [[ ! -d "$CWD" ]]; then
   echo "Error: --cwd is not a directory: $CWD" >&2
   exit 2
+fi
+
+# 规格文件必须是可读文件：传了路径却读不到，等于把「聊透的需求」丢了，
+# 后面 Manager 会照推断草稿干活，必须在这里就停。
+if [[ -n "$SPEC_FILE" ]]; then
+  if [[ ! -f "$SPEC_FILE" ]]; then
+    echo "Error: --spec is not a readable file: $SPEC_FILE" >&2
+    exit 2
+  fi
+  if [[ ! -s "$SPEC_FILE" ]]; then
+    echo "Error: --spec file is empty: $SPEC_FILE" >&2
+    exit 2
+  fi
 fi
 
 if [[ "$AUTO_MODE" != "0" && "$AUTO_MODE" != "1" ]]; then
@@ -202,36 +251,50 @@ fi
 
 
 # ============================================================================
-# 阶段 1：需求深挖
-# ============================================================================
-echo "【阶段 1/7】需求深挖..."
+MAIN_AGENT_NAME="$(get_main_agent_name)"
+MAIN_AGENT_SLUG="$(dbz_agent_slug "$MAIN_AGENT_NAME" 2>/dev/null || printf '%s' "$MAIN_AGENT_NAME")"
 
-# 这里应该调用 AI 与用户对话，明确：
-# - 最终目标是什么？
-# - 有哪些约束？
-# - 如何验收？
-# 当前简化版本：直接从 REQUEST 提取
-WORK_NAME="${REQUEST:0:20}..."  # 截取前 20 字符作为工作名
+# 分解库先加载：类型识别既是 SPEC 的推断依据，也是阶段 2 的骨架。
+source "$SKILL_DIR/lib/decompose.sh"
+source "$SKILL_DIR/lib/spec.sh"
+
+WORK_NAME="$(kaio_truncate_text "$REQUEST" 20)…"  # 按字符截取前 20 个字符作为工作名
 # `git rev-parse HEAD || echo unknown` 在空仓库里会先打印 "HEAD" 再拼接
 # "unknown"，报告里就变成两行；分开取值才能只拿到一个值。
 BASE_COMMIT="$(cd "$CWD" && git rev-parse HEAD 2>/dev/null || true)"
 [[ -z "$BASE_COMMIT" ]] && BASE_COMMIT="unknown"
 
+TASK_TYPE="$(identify_task_type "$REQUEST" "$CWD")"
+
+# 主 Agent 的提问清单始终落盘：没用 --spec 时，它就是「还差一次对话」的凭据。
+kaio_spec_interview_prompts > "$TASK_DIR/SPEC_QUESTIONS.md"
+
+SPEC_PATH="$TASK_DIR/SPEC.md"
+if [[ -n "$SPEC_FILE" ]]; then
+  if ! cp "$SPEC_FILE" "$SPEC_PATH"; then
+    echo "Error: 无法复制 --spec 文件到任务目录: $SPEC_FILE" >&2
+    exit 1
+  fi
+  echo "✓ 需求规格: 使用 --spec $SPEC_FILE（已复制到 $SPEC_PATH）"
+  record_decision "需求深挖" "使用 --spec 文件（$SPEC_FILE）"
+else
+  echo "  未传 --spec：按请求推断规格草稿，自动推断的维度会在报告里逐条标出"
+  if ! kaio_build_spec "$REQUEST" "$CWD" "$TASK_TYPE" "$VERIFY_CMD" "" "$SPEC_PATH"; then
+    echo "Error: 生成 SPEC 草稿失败" >&2
+    exit 1
+  fi
+  echo "✓ 需求规格草稿: $SPEC_PATH"
+  echo "  提问清单: $TASK_DIR/SPEC_QUESTIONS.md（下次用 --spec 传入确认结果）"
+  record_decision "需求深挖" "按请求推断规格草稿（未经用户确认）"
+fi
+
 echo "✓ 工作名: $WORK_NAME"
+echo "✓ 任务类型: $TASK_TYPE"
 echo "✓ Base commit: $BASE_COMMIT"
 echo ""
 
-# ============================================================================
-# 阶段 2：任务分解
-# ============================================================================
 echo "【阶段 2/7】任务分解..."
 
-# 调用任务分解库
-source "$SKILL_DIR/lib/decompose.sh"
-
-# 识别任务类型
-TASK_TYPE=$(identify_task_type "$REQUEST" "$CWD")
-echo "✓ 任务类型: $TASK_TYPE"
 
 # 分解为 Manager 任务：模块 scope + 二线角色名。
 # 返回格式：每行 display|module-slug|scope|dependencies
@@ -291,8 +354,7 @@ echo "【阶段 4/7】分配二线角色并准备 Manager 任务文件..."
 # 并把领到的名字写入 $TASK_DIR/.dbz-reserved 占位，避免并发编排撞名。
 MANAGER_NAMES=()
 MANAGER_SLUGS=()
-# 模块 slug → Manager 角色 slug：派发时靠它找到对应任务文件，
-# 不能拿角色映射表（角色 slug → 中文名）当派发表用。
+MANAGER_TASK_WORKS=()
 MANAGER_MAP_FILE="$TASK_DIR/.manager-map"
 : > "$MANAGER_MAP_FILE"
 
@@ -316,6 +378,18 @@ done <<< "$MANAGER_ROSTER"
 # 否则 --count 与 --tasks 数量对不上会直接 exit 2。
 MANAGER_PLANNED=()
 manager_idx=0
+# 验收口径统一来自 SPEC：有 --verify 就把命令原样交给 Manager，没有就说明
+# 质量门只能靠报告覆盖率，避免 Manager 自己编一套验收标准。
+# 必须在下面的 sed 循环之前定义：循环里第一个 Manager 就要用到这两个变量。
+if [[ -n "$VERIFY_CMD" ]]; then
+  ACCEPTANCE_CMD_TEXT="$VERIFY_CMD"
+  ACCEPTANCE_CRITERIA_TEXT="\`${VERIFY_CMD}\` 在 $CWD 下执行 exit 0；本模块所有 Worker 完成且无越界修改"
+else
+  ACCEPTANCE_CMD_TEXT="# 没有传 --verify：质量门只靠报告覆盖率，验收标准见 $SPEC_PATH"
+  ACCEPTANCE_CRITERIA_TEXT="本模块所有 Worker 完成、写报告、无越界修改（未传 --verify，无法自动断言）"
+fi
+
+
 while IFS='|' read -r module_name module_slug task_scope dependencies; do
   [[ -z "$module_name" || -z "$module_slug" ]] && continue
   manager_slug="${MANAGER_ROSTER_SLUGS[$manager_idx]:-}"
@@ -327,6 +401,7 @@ while IFS='|' read -r module_name module_slug task_scope dependencies; do
   manager_name="$(dbz_agent_display_name "$(dbz_base_slug "$manager_slug")")"
   MANAGER_NAMES+=("$manager_name")
   MANAGER_PLANNED+=("$manager_slug")
+  MANAGER_TASK_WORKS+=("${module_name} · ${WORK_NAME}")
 
   sed \
     -e "s|{{MANAGER_NAME}}|$manager_name|g" \
@@ -338,9 +413,11 @@ while IFS='|' read -r module_name module_slug task_scope dependencies; do
     -e "s|{{TASK_DIR}}|$TASK_DIR|g" \
     -e "s|{{TASK_SCOPE}}|$task_scope|g" \
     -e "s|{{DEPENDENCIES}}|$dependencies|g" \
+    -e "s|{{SPEC_PATH}}|$SPEC_PATH|g" \
+    -e "s|{{MAIN_AGENT_SLUG}}|$MAIN_AGENT_SLUG|g" \
     -e "s|{{MAX_WORKERS}}|$MAX_WORKERS_PER_MANAGER|g" \
-    -e "s|{{ACCEPTANCE_COMMANDS}}|# TODO: 根据项目类型填充验收命令|g" \
-    -e "s|{{ACCEPTANCE_CRITERIA}}|所有 Worker 完成、测试通过、无冲突|g" \
+    -e "s|{{ACCEPTANCE_COMMANDS}}|${ACCEPTANCE_CMD_TEXT}|g" \
+    -e "s|{{ACCEPTANCE_CRITERIA}}|$ACCEPTANCE_CRITERIA_TEXT|g" \
     "$SKILL_DIR/templates/manager-task.md" > "$TASK_DIR/${manager_slug}-task.md"
 
   printf '%s\t%s\n' "$module_slug" "$manager_slug" >> "$MANAGER_MAP_FILE"
@@ -356,10 +433,6 @@ MANAGER_SLUGS=("${MANAGER_PLANNED[@]}")
 ACTUAL_MANAGER_COUNT="${#MANAGER_SLUGS[@]}"
 
 
-
-echo ""
-echo "→ 启动 $ACTUAL_MANAGER_COUNT 个 Manager..."
-
 # 第二个关键决策点：这里是真正开始烧 token / 起进程的边界。
 if ! confirm_decision "启动 $ACTUAL_MANAGER_COUNT 个 Manager（每人不超 $MAX_WORKERS_PER_MANAGER 个 Worker）" \
   "$(printf 'Workspace: %s\n任务目录: %s\n角色: %s\n\n启动后 Manager 会自行 fanout Worker 并写报告，中途只监控不代劳。' \
@@ -369,48 +442,55 @@ if ! confirm_decision "启动 $ACTUAL_MANAGER_COUNT 个 Manager（每人不超 $
   exit 3
 fi
 
-# 角色 slug 同时作为任务名、herdr agent 名和任务文件名。
-MANAGER_TASKS_CSV=$(IFS=,; echo "${MANAGER_SLUGS[*]}")
 
-# 界王拳专用入口：不改变普通 fanout 的西部牛仔命名。
-bash "$SKILL_DIR/scripts/fanout.sh" \
-  --count "$ACTUAL_MANAGER_COUNT" \
-  --kind auto \
-  --work "$WORK_NAME" \
-  --dbz-tier manager \
-  --dbz-owner "$MAIN_AGENT_NAME" \
-  --tasks "$MANAGER_TASKS_CSV" \
-  --workspace "$WORKSPACE_ID" \
-  --cwd "$CWD" \
-  --tasks-dir "$TASK_DIR"
+# 每个 Manager 单独建一个 Tab。这样 UI 上天然形成：主 Agent workspace → Manager Tab → Worker panes。
+# 同一个 workspace 仍被所有 Manager 共享，但 manifest 按 Manager 隔离，后续派发/监控
+# 只读取各自的真实 agent 名，不会把多个 Manager 混在一个 Tab 里。
+MANAGER_MANIFESTS=()
+MANAGER_DBZ_MAPS=()
+MANAGER_ACTUAL_NAMES=()
+for ((i = 0; i < ACTUAL_MANAGER_COUNT; i++)); do
+  manager_slug="${MANAGER_SLUGS[$i]}"
+  manager_work="${MANAGER_TASK_WORKS[$i]}"
+  MANAGER_FANOUT_OUTPUT="$(bash "$SKILL_DIR/scripts/fanout.sh" \
+    --count 1 \
+    --kind auto \
+    --work "$manager_work" \
+    --dbz-tier manager \
+    --dbz-owner "$manager_slug" \
+    --dbz-parent "$manager_slug" \
+    --dbz-root "$MAIN_AGENT_SLUG" \
+    --tasks "$manager_slug" \
+    --workspace "$WORKSPACE_ID" \
+    --cwd "$CWD" \
+    --tasks-dir "$TASK_DIR" \
+    --no-controller-rename 2>&1)" || {
+    printf '%s\n' "$MANAGER_FANOUT_OUTPUT" >&2
+    echo "Error: Manager $manager_slug 的 Tab 创建失败" >&2
+    exit 1
+  }
+  printf '%s\n' "$MANAGER_FANOUT_OUTPUT"
 
-MANAGER_MANIFEST=$(ls -1 "$TASK_DIR"/herdr-*-agents.tsv | tail -1)
-MANAGER_DBZ_MAP="${MANAGER_MANIFEST}.dbz-names"
-if [[ ! -f "$MANAGER_DBZ_MAP" ]]; then
-  echo "Error: DBZ 名称映射缺失: $MANAGER_DBZ_MAP" >&2
-  exit 1
-fi
-
-echo "✓ Manager 已启动，manifest: $MANAGER_MANIFEST"
-echo ""
+  manager_manifest="$(printf '%s\n' "$MANAGER_FANOUT_OUTPUT" | sed -n 's/^manifest:[[:space:]]*//p' | tail -n 1)"
+  if [[ -z "$manager_manifest" || ! -f "$manager_manifest" ]]; then
+    echo "Error: fanout 未返回 Manager $manager_slug 的有效 manifest" >&2
+    exit 1
+  fi
+  manager_actual_name="$(awk -F '\t' '$1 != "" && $1 != "name" && $1 !~ /^#/ { print $1; exit }' "$manager_manifest")"
+  if [[ -z "$manager_actual_name" ]]; then
+    echo "Error: Manager manifest 没有已启动的 agent: $manager_manifest" >&2
+    exit 1
+  fi
+  MANAGER_MANIFESTS+=("$manager_manifest")
+  MANAGER_DBZ_MAPS+=("${manager_manifest}.dbz-names")
+  MANAGER_ACTUAL_NAMES+=("$manager_actual_name")
+  echo "✓ Manager $manager_actual_name 已建立独立 Tab，manifest: $manager_manifest"
+done
 
 # ============================================================================
 # 阶段 5：派发任务给 Manager
 # ============================================================================
 echo "【阶段 5/7】派发任务给所有 Manager..."
-
-# 实际 agent 名以 manifest 为准：herdr 撞名时 fanout 会加 -2/-3 后缀，
-# 直接用规划好的 slug 去 prompt 会在重跑时找不到 agent。
-MANAGER_ACTUAL_NAMES=()
-while IFS=$'\t' read -r m_name _m_pane _m_tab _m_ws; do
-  [[ -z "$m_name" || "$m_name" == "name" || "$m_name" == \#* ]] && continue
-  MANAGER_ACTUAL_NAMES+=("$m_name")
-done < "$MANAGER_MANIFEST"
-
-if (( ${#MANAGER_ACTUAL_NAMES[@]} == 0 )); then
-  echo "Error: manifest 里没有任何已启动的 Manager: $MANAGER_MANIFEST" >&2
-  exit 1
-fi
 
 MODULE_SLUGS=()
 while IFS=$'\t' read -r m_module _m_slug; do
@@ -418,38 +498,26 @@ while IFS=$'\t' read -r m_module _m_slug; do
   MODULE_SLUGS+=("$m_module")
 done < "$MANAGER_MAP_FILE"
 
-# 规划名单（slug → 模块）和实际名单（herdr 真实 agent 名）按启动顺序一一对应，
-# 数量不一致时只派发能配对的部分，并明确告警：宁可少派，也不能把任务
-# 错派到别的 Manager 的模块上。
-PLANNED_SLUGS=()
-if (( ${#MANAGER_SLUGS[@]} )); then
-  PLANNED_SLUGS=("${MANAGER_SLUGS[@]}")
-fi
-
+# 每个 Manager 的 manifest、实际 agent 名、规划 slug 和模块按同一索引对齐。
+# 这样即使 herdr 为某个名字追加 -2/-3，任务也不会错派到另一个 Tab。
 MANIFEST_COUNT=${#MANAGER_ACTUAL_NAMES[@]}
-PLANNED_COUNT=${#PLANNED_SLUGS[@]}
-if (( MANIFEST_COUNT != PLANNED_COUNT )); then
-  echo "Warning: manifest 有 $MANIFEST_COUNT 个 Manager，规划是 $PLANNED_COUNT 个；只派发可配对的部分。" >&2
-fi
-DISPATCH_COUNT=$MANIFEST_COUNT
-(( PLANNED_COUNT < DISPATCH_COUNT )) && DISPATCH_COUNT=$PLANNED_COUNT
-if (( DISPATCH_COUNT == 0 )); then
-  echo "Error: 规划名单为空，无法派发任务" >&2
+PLANNED_COUNT=${#MANAGER_SLUGS[@]}
+MODULE_COUNT=${#MODULE_SLUGS[@]}
+if (( MANIFEST_COUNT != PLANNED_COUNT || MODULE_COUNT != PLANNED_COUNT )); then
+  echo "Error: Manager 索引不一致（manifest=$MANIFEST_COUNT planned=$PLANNED_COUNT modules=$MODULE_COUNT）" >&2
   exit 1
 fi
 
-for ((i = 0; i < DISPATCH_COUNT; i++)); do
+for ((i = 0; i < MANIFEST_COUNT; i++)); do
   manager_slug="${MANAGER_ACTUAL_NAMES[$i]}"
-  planned_slug="${PLANNED_SLUGS[$i]}"
+  planned_slug="${MANAGER_SLUGS[$i]}"
   task_file="$TASK_DIR/${planned_slug}-task.md"
-  if [[ ! -f "$task_file" && "$manager_slug" != "$planned_slug" ]]; then
-    task_file="$TASK_DIR/${manager_slug}-task.md"
-  fi
-  manager_name="$(dbz_manifest_display_name "$MANAGER_DBZ_MAP" "$manager_slug")"
+  manager_map="${MANAGER_DBZ_MAPS[$i]}"
+  manager_name="$(dbz_manifest_display_name "$manager_map" "$manager_slug")"
 
   if [[ ! -f "$task_file" ]]; then
-    echo "Warning: Task file not found for $manager_slug: $task_file" >&2
-    continue
+    echo "Error: Task file not found for $manager_slug: $task_file" >&2
+    exit 1
   fi
 
   # 撞名加了后缀时，把任务文件里的规划 slug 换成真实 agent 名，
@@ -460,7 +528,7 @@ for ((i = 0; i < DISPATCH_COUNT; i++)); do
       && mv "$task_tmp" "$task_file"
   fi
 
-  echo "→ 派发任务给 $manager_name ($manager_slug)${MODULE_SLUGS[$i]:+ · 模块 ${MODULE_SLUGS[$i]}} ..."
+  echo "→ 派发任务给 $manager_name ($manager_slug) · 模块 ${MODULE_SLUGS[$i]} ..."
   herdr agent prompt "$manager_slug" \
     "Read $task_file and follow it step by step. You are a Manager, not a Worker. Your job is to decompose your task scope, create Worker task files, launch Workers using fanout.sh in YOUR tab, harvest results, verify quality, and write a report to $TASK_DIR/${manager_slug}-report.md. Do not commit."
 done
@@ -469,27 +537,30 @@ done
 MANAGER_SLUGS=("${MANAGER_ACTUAL_NAMES[@]}")
 
 
-
 echo "✓ 所有 Manager 已收到任务"
 echo ""
-
-# ============================================================================
-# 阶段 6：Loop 管理（持续监控 + 留证式介入）
-# ============================================================================
-echo "【阶段 6/7】Loop 管理（监控 $ACTUAL_MANAGER_COUNT 个 Manager）..."
-echo "轮询: 每 ${LOOP_INTERVAL}s 一次，最多 ${MAX_LOOPS} 轮（--max-loops / --loop-interval 可调）"
 echo ""
 
+# ============================================================================
+# 阶段 6 + 7：Loop 监控、收割与验收（函数化，Goal 模式要反复跑）
+# ============================================================================
 INTERVENTION_LOG="$TASK_DIR/.interventions.log"
-: > "$INTERVENTION_LOG"
 
-LOOP_COUNT=0
-LAST_STATUS=""
-ALL_SETTLED=0
+# 跑到所有 Manager 停手，或用尽 --max-loops。
+# 结果写入全局：LOOP_COUNT / LAST_STATUS / ALL_SETTLED。
+kaio_monitor_managers() { # <轮次标签>
+  local round_label="${1:-}"
+  echo "【阶段 6/7】Loop 管理（监控 $ACTUAL_MANAGER_COUNT 个 Manager）..."
+  [[ -n "$round_label" ]] && echo "  本轮: $round_label"
+  echo "轮询: 每 ${LOOP_INTERVAL}s 一次，最多 ${MAX_LOOPS} 轮（--max-loops / --loop-interval 可调）"
+  echo ""
 
-while (( LOOP_COUNT < MAX_LOOPS )); do
-  LOOP_COUNT=$((LOOP_COUNT + 1))
-  echo "[Loop $LOOP_COUNT/$MAX_LOOPS] 检查 Manager 状态..."
+  : > "$INTERVENTION_LOG"
+  LOOP_COUNT=0
+  LAST_STATUS=""
+  ALL_SETTLED=0
+
+  while (( LOOP_COUNT < MAX_LOOPS )); do
 
   # jq 的 index() 需要数组变量：先把名字列表转成 JSON 数组再 --argjson 传入。
   # 直接把 "${MANAGER_SLUGS[@]}" 展开成多个参数，jq 会把第二个名字当成文件报错。
@@ -560,20 +631,24 @@ while (( LOOP_COUNT < MAX_LOOPS )); do
   WAIT_SECS=$LOOP_INTERVAL
   (( WAIT_SECS < 1 )) && WAIT_SECS=1
   for ((w = 0; w < WAIT_SECS; w++)); do sleep 1; done
-done
+  done
 
-if (( ALL_SETTLED == 0 )); then
-  echo "Warning: 达到轮询上限 ${MAX_LOOPS} 或仍有 blocked/error，Manager 可能未完成" >&2
-fi
+  if (( ALL_SETTLED == 0 )); then
+    echo "Warning: 达到轮询上限 ${MAX_LOOPS} 或仍有 blocked/error，Manager 可能未完成" >&2
+  fi
 
-echo ""
+  echo ""
+}
 
-# ============================================================================
-# 阶段 7：收割报告并聚合
-# ============================================================================
-echo "【阶段 7/7】收割 Manager 报告并聚合..."
+# 收割报告 + git 现状 + 验收命令 + 质量门。
+# 结果写入全局：FINAL_REPORT / REPORT_FOUND / REPORT_TOTAL / MISSING_REPORTS /
+# COVERAGE / VERIFY_RESULT / VERIFY_RC / VERIFY_OUTPUT / GATE。
+kaio_harvest_and_verify() { # <轮次标签>
+  local round_label="${1:-}"
+  echo "【阶段 7/7】收割 Manager 报告并聚合..."
+  [[ -n "$round_label" ]] && echo "  本轮: $round_label"
 
-FINAL_REPORT="$TASK_DIR/FINAL_REPORT.md"
+  FINAL_REPORT="$TASK_DIR/FINAL_REPORT.md"
 REPORT_TOTAL=0
 REPORT_FOUND=0
 MISSING_REPORTS=""
@@ -687,6 +762,7 @@ if [[ -n "$VERIFY_CMD" ]]; then
 fi
 
 # 质量门：报告覆盖率 + 验收命令。两者都过才算通过。
+# 变量不回退到 local：Goal 模式的主循环靠它们判断要不要返工。
 COVERAGE="0.00"
 if (( REPORT_TOTAL > 0 )); then
   COVERAGE="$(awk -v f="$REPORT_FOUND" -v t="$REPORT_TOTAL" 'BEGIN{ printf "%.2f", f / t }')"
@@ -705,6 +781,7 @@ fi
   echo
   echo "## 结论"
   echo
+  echo "- Goal 轮次: ${GOAL_ROUND}/${MAX_GOAL_ROUNDS}"
   echo "- 报告覆盖: ${REPORT_FOUND}/${REPORT_TOTAL}（覆盖率 ${COVERAGE}，阈值 ${QUALITY_THRESHOLD}）"
   echo "- 验收命令: ${VERIFY_RESULT}"
   echo "- 质量门: ${GATE}"
@@ -721,11 +798,108 @@ fi
   echo "任务目录: ${TASK_DIR}"
   echo
 } >> "$FINAL_REPORT"
+}
+
+# 把这一轮的质量缺口写成返工任务书：Goal 模式让 Manager 照单补，
+# 而不是把整份原始需求再丢回去重做一遍。
+kaio_write_gap_file() { # <轮次> <输出文件>
+  local round="$1" out_file="$2"
+  {
+    echo "# Goal 返工任务 · 第 ${round} 轮"
+    echo
+    echo "任务: $REQUEST"
+    echo "需求规格: $SPEC_PATH"
+    echo
+    echo "上一轮质量门: $GATE（报告覆盖 ${REPORT_FOUND}/${REPORT_TOTAL}，覆盖率 ${COVERAGE}，阈值 ${QUALITY_THRESHOLD}）"
+    echo "上一轮验收: $VERIFY_RESULT"
+    echo
+    echo "## 必须补齐的缺口"
+    echo
+    if [[ -n "$MISSING_REPORTS" ]]; then
+      echo "1. 以下 Manager 没有交报告（在 \$TASK_DIR 下写 <你的 agent 名>-report.md）："
+      printf '   - %s\n' $MISSING_REPORTS
+    fi
+    if (( VERIFY_RC != 0 )); then
+      echo "2. 验收命令仍未通过，失败输出（尾部）："
+      echo
+      echo '```'
+      printf '%s\n' "$VERIFY_OUTPUT" | tail -n 80
+      echo '```'
+    fi
+    echo
+    echo "## 你要做的事"
+    echo
+    echo "1. 先读 $SPEC_PATH，确认自己模块的验收标准"
+    echo "2. 只看与自己模块相关的缺口，不要重写已完成的部分"
+    echo "3. 缺什么补什么，补完在 \$TASK_DIR 写 <你的 agent 名>-report.md"
+    echo "4. 不要 commit，不要改本模块 write scope 以外的文件"
+    echo
+    echo "## 验收命令（主 Agent 会再跑一遍）"
+    echo
+    echo '```bash'
+    echo "${VERIFY_CMD:-未传 --verify，质量门只靠报告覆盖率}"
+    echo '```'
+  } > "$out_file"
+}
+
+# 把所有 Manager 拉起来补缺口。
+kaio_dispatch_rework() { # <轮次> <任务书路径>
+  local round="$1" gap_file="$2" slug
+  for slug in "${MANAGER_SLUGS[@]}"; do
+    [[ -z "$slug" ]] && continue
+    echo "→ 返工派发 $slug ..."
+    herdr agent prompt "$slug" \
+      "Goal round ${round}: 质量门未通过。Read $gap_file and $SPEC_PATH, fix ONLY the gaps in your module, then rewrite $TASK_DIR/${slug}-report.md. Do not commit." \
+      || echo "Warning: 返工派发给 $slug 失败（agent 可能已退出）" >&2
+  done
+}
+
+echo ""
+echo "开始 Loop 管理（第 1 轮）..."
+echo ""
+kaio_monitor_managers "第 1 轮"
+echo ""
+# 首轮也必须收割：GATE/COVERAGE 只有收割后才有值，少了这步 Goal 循环
+# 会拿未初始化的变量做判断，报告里也不会出现 round-0 的快照。
+kaio_harvest_and_verify "第 1 轮"
+cp "$FINAL_REPORT" "$TASK_DIR/FINAL_REPORT-round-0.md" 2>/dev/null || true
+
+# ============================================================================
+# Goal 模式：质量门不通过就自动返工，直到通过或用尽 --max-goal-rounds
+# ============================================================================
+GOAL_ROUND=0
+while [[ "$GATE" != "通过" ]] && (( GOAL_ROUND < MAX_GOAL_ROUNDS )); do
+  GOAL_ROUND=$((GOAL_ROUND + 1))
+  echo ""
+  echo "=============================================="
+  echo "【Goal 模式】第 ${GOAL_ROUND}/${MAX_GOAL_ROUNDS} 轮自动返工"
+  echo "  上一轮: 覆盖率 ${COVERAGE}（阈值 ${QUALITY_THRESHOLD}），验收 ${VERIFY_RESULT}"
+  echo "=============================================="
+
+  GAP_FILE="$TASK_DIR/GOAL-ROUND-${GOAL_ROUND}-GAPS.md"
+  kaio_write_gap_file "$GOAL_ROUND" "$GAP_FILE"
+  record_decision "Goal 轮次 ${GOAL_ROUND}" "质量门不通过（覆盖率 ${COVERAGE}，验收 ${VERIFY_RESULT}），派发返工任务书 ${GAP_FILE}"
+
+  kaio_dispatch_rework "$GOAL_ROUND" "$GAP_FILE"
+  kaio_monitor_managers "返工轮 ${GOAL_ROUND}"
+  kaio_harvest_and_verify "返工轮 ${GOAL_ROUND}"
+  cp "$FINAL_REPORT" "$TASK_DIR/FINAL_REPORT-round-${GOAL_ROUND}.md" 2>/dev/null || true
+
+done
+
+if (( GOAL_ROUND > 0 )) && [[ "$GATE" != "通过" ]]; then
+  record_decision "Goal 结束" "用尽 ${MAX_GOAL_ROUNDS} 轮返工仍未通过，升级给主 Agent"
+  echo ""
+  echo "⚠️  Goal 模式已用尽 ${MAX_GOAL_ROUNDS} 轮返工，质量门仍不通过（需主 Agent 接管）。" >&2
+fi
 
 echo ""
 echo "=== 界王拳任务完成 ==="
 echo "最终报告: $FINAL_REPORT"
 echo "任务目录: $TASK_DIR"
+if (( GOAL_ROUND > 0 )); then
+  echo "Goal 轮次: ${GOAL_ROUND}/${MAX_GOAL_ROUNDS} 轮返工"
+fi
 if [[ -f "$INTERVENTION_LOG" && -s "$INTERVENTION_LOG" ]]; then
   echo "介入留证: $INTERVENTION_LOG"
 fi

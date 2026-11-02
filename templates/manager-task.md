@@ -6,6 +6,7 @@
 
 Repository: {{CWD}}  
 Base commit: {{BASE_COMMIT}}  
+需求规格（唯一事实来源）: {{SPEC_PATH}}
 Do not commit.
 
 ---
@@ -15,9 +16,12 @@ Do not commit.
 你是一个管理者，不是工作者。你的工作流程是：
 
 ### 第一步：理解分配给你的任务
+- **先读需求规格**：`{{SPEC_PATH}}` —— 这是主 Agent 与用户确认后的唯一事实来源，
+  目标、交付物、约束、验收标准都以它为准；和本文件冲突时以 SPEC 为准。
 - 范围：{{TASK_SCOPE}}
 - 这个范围内的所有工作都归你管理
 - 你需要进一步分解成 2-6 个独立的 Worker 任务包
+- 拆包时把 SPEC 里属于你范围的验收标准抄进 Worker 任务文件，Worker 不需要自己猜
 
 ### 第二步：分解任务成 Worker 包
 在 `{{TASK_DIR}}/` 目录下创建 Worker 任务文件。每个 Worker 任务文件应该包含：
@@ -41,15 +45,17 @@ echo "$WORKER_SLUGS"
 ```bash
 cd {{CWD}}
 WORKER_CSV="$(printf '%s\n' "$WORKER_SLUGS" | paste -sd, -)"
-bash {{SKILL_DIR}}/scripts/fanout.sh \
-  --count "$(printf '%s\n' "$WORKER_SLUGS" | grep -c .)" \
-  --work "{{MANAGER_NAME}} 的工作" \
-  --dbz-tier worker \
-  --dbz-owner "{{MANAGER_NAME}}" \
-  --in-tab \
-  --workspace "$HERDR_WORKSPACE_ID" \
-  --cwd "." \
-  --tasks-dir {{TASK_DIR}} \
+bash {{SKILL_DIR}}/scripts/fanout.sh \\
+  --count "$(printf '%s\\n' "$WORKER_SLUGS" | grep -c .)" \\
+  --work "{{MANAGER_NAME}} 的工作" \\
+  --dbz-tier worker \\
+  --dbz-owner "{{MANAGER_SLUG}}" \\
+  --dbz-parent "{{MANAGER_SLUG}}" \\
+  --dbz-root "{{MAIN_AGENT_SLUG}}" \\
+  --in-tab \\
+  --workspace "$HERDR_WORKSPACE_ID" \\
+  --cwd "." \\
+  --tasks-dir {{TASK_DIR}} \\
   --tasks "$WORKER_CSV"
 ```
 

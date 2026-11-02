@@ -96,15 +96,74 @@ rm -rf /tmp/fangyang-le
 
 ### 怎么开
 
+**第一步：先和用户聊透，把结论写成 SPEC**（不要跳过）。主 Agent 用 `SPEC_QUESTIONS.md` 里的问题清单逐条问清楚：最终交付物、现状与起点、可改/禁改边界、验收命令、约束与优先级。聊完把答案写成一份 markdown（比如 `SPEC.md`），用 `--spec` 传进去——脚本会把它复制成任务目录里的 `SPEC.md`，作为**唯一事实来源**下发给每个 Manager。
+
+**第二步：一条命令开跑**：
+
 ```bash
 "$SKILL_DIR/scripts/kaio-ken-orchestrate.sh" \
   --request "开发全栈 AI 聊天应用（React + FastAPI + DB + 部署文档）" \
+  --spec "$PWD/SPEC.md" \
+  --verify "pnpm typecheck && pnpm test && pnpm build" \
   --max-managers 4 \
   --max-workers-per-manager 3 \
+  --max-goal-rounds 2 \
   --cwd "$PWD"
 ```
 
-脚本会：建**专属 workspace**（`界王拳 · <任务名>`，不碰主控原有工作区）→ 分解为 Manager 任务 → 用 `fanout.sh` 每个 Manager 开一个 tab → 派发任务 → Loop 监控 → 收割聚合报告。
+脚本会：建**专属 workspace**（`界王拳 · <任务名>`，不碰主控原有工作区）→ 固化 SPEC → 分解为 Manager 任务 → 用 `fanout.sh` 每个 Manager 开一个 tab → 派发任务 → Loop 监控 → 收割 + 跑 `--verify` → 质量门不通过则自动返工。
+
+常用参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--spec PATH` | 聊透后的需求规格；不传则按 request 推断草稿，并在报告里标出「未确认维度」 |
+| `--verify CMD` | 最终验收命令，在 `--cwd` 下执行，exit 0 才算通过；不传则质量门只靠报告覆盖率，报告会标注「未运行」 |
+| `--max-goal-rounds N` | 质量门不通过时最多自动返工几轮（0–10，默认 2） |
+| `--max-managers` / `--max-workers-per-manager` | 2–6，控制两层宽度 |
+| `--quality FLOAT` | 报告覆盖率阈值 0.7–1.0（默认 0.85） |
+| `--auto-mode 0` | 关键决策点先问用户；无 tty 时降级为自动继续并写入 `.decisions.log` |
+
+### Goal 模式：不合格就自己返工
+
+首轮收割后主 Agent 会算一道质量门：**报告覆盖率 ≥ `--quality` 且 `--verify` 通过** 才算过。
+
+```mermaid
+flowchart TD
+  A[首轮 Loop + 收割] --> B{FINAL_REPORT-round-0.md<br/>质量门通过?}
+  B -- 是 --> Z[交付]
+  B -- 否 --> C{轮次 < max-goal-rounds?}
+  C -- 否 --> E[升级给主 Agent<br/>.decisions.log 留痕]
+  C -- 是 --> D[写 GOAL-ROUND-N-GAPS.md<br/>只列缺口，不重发原需求]
+  D --> F[返工派发给各 Manager]
+  F --> G[Loop 监控 + 收割 + 重跑 verify]
+  G --> H[快照 FINAL_REPORT-round-N.md]
+  H --> B
+```
+
+要点：
+
+- 返工任务书叫 `GOAL-ROUND-N-GAPS.md`，只写「谁没交报告」「verify 的失败尾部」，Manager 照着补，不会推倒重做。
+- 每轮都留快照 `FINAL_REPORT-round-N.md`，可以对比轮次差异。
+- 轮数用尽仍不通过 → 写 `.decisions.log` 并 exit 1，明确「需主 Agent 接管」，不会假装成功。
+- 质量门结论、返工原因、`--spec` 来源全部落在 `.decisions.log`，事后可追溯为什么这么判。
+
+### 产物在哪
+
+任务目录 `.fangyang/kaio-ken-<ts>/` 下：
+
+| 文件 | 内容 |
+|---|---|
+| `SPEC.md` | 本次唯一事实来源（`--spec` 复制而来，或推断草稿） |
+| `SPEC_QUESTIONS.md` | 需求提问清单；没聊透时它就是「还差一次对话」的凭据 |
+| `.decisions.log` | 自动/人工决策留痕（启动模式、分解确认、Goal 轮次、升级） |
+| `.manager-map` | 模块 → Manager slug 映射（DBZ 撞名加后缀时靠它对账） |
+| `manager-<slug>-task.md` | 每个 Manager 的任务书 |
+| `FINAL_REPORT.md` / `FINAL_REPORT-round-N.md` | 聚合报告与每轮快照 |
+| `GOAL-ROUND-N-GAPS.md` | 返工任务书 |
+| `herdr-<...>-agents.tsv` | fanout 记录的 agent ↔ pane manifest |
+
+工作名（workspace / tab 标签、manifest 文件名）按**字符**截断而不是字节，中文需求在 `LC_CTYPE=C` 下也不会切出非法 UTF-8。
 
 ### 三层下的铁律补充
 
@@ -607,7 +666,9 @@ git commit -m "<type>(<scope>): <summary>"
 
 - `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent；同步把主控 tab 改名 `<owner> · <work>`；在 herdr pane 外执行时自动 bootstrap（装 herdr、起 headless server、建专属牧场 workspace），`--no-bootstrap` 可关闭
 - `scripts/ensure-herdr.sh`：确保 herdr CLI 与 headless `herdr server` 可用（已有则复用、缺失则安装/拉起），幂等；供 fanout.sh 外部模式调用，也可单独执行
-- `scripts/kaio-ken-orchestrate.sh`：界王拳三层编排入口——建专属 workspace、分解 Manager 任务、逐个 fanout 开圈、派发、Loop 监控、聚合报告
+- `scripts/kaio-ken-orchestrate.sh`：界王拳三层编排入口——建专属 workspace、固化 SPEC（`--spec` 或推断草稿）、分解 Manager 任务、逐个 fanout 开圈、派发、Loop 监控、收割 + `--verify` 质量门、Goal 模式自动返工，最后聚合报告
+- `scripts/dbz-roster.sh`：按一线/二线/三线领不重复的七龙珠角色 slug（`--count --tier --used-from --exclude --explain`）
+- `lib/spec.sh`：需求规格推断与提问清单（`SPEC_QUESTIONS.md`）、Goal 质量门判据
 - `lib/decompose.sh`：按任务类型（code/report/design/mixed）给出 Manager 分片建议
 - `lib/dbz-characters.sh`：三线七龙珠角色名池（主控/Manager/Worker 命名，含去重）
 - `templates/manager-task.md`：Manager 任务模板（七个步骤，重点说明「在自己的 tab 里用 fanout.sh 起 Worker」）

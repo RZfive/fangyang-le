@@ -144,29 +144,61 @@ Manager-A 的羊圈
   └─ 检查依赖关系（跨 Manager 的接口是否就绪）
 
 当所有 Manager 都完成时：
-  → 转到阶段 8
+  → 转到阶段 8（收割 + 质量门）
 ```
 
-### 阶段 8：收割与聚合（主 Agent）
 
-1. **读取所有 Manager 报告** — 从 `.fangyang/<kaio-ken-dir>/<manager>-report.md`
-2. **合并成最终报告** — `.fangyang/<kaio-ken-dir>/FINAL_REPORT.md`
-3. **运行全量验证** — 根据项目类型（pnpm test、cargo test 等）
-4. **交付用户** — 汇报完成情况、提示跨 Manager 集成点、等待最终确认
+### 阶段 8：收割 + 质量门（主 Agent）
 
----
+1. **收割所有 Manager** — `harvest.sh`（不带 `--close`，羊圈保留待审）
+2. **算报告覆盖率** — 交了 `<manager>-report.md` 的 Manager 数 / Manager 总数，与 `--quality`（默认 0.85）比较
+3. **跑验收命令** — `--verify` 给的命令在 `--cwd` 下执行一次，exit 0 才算过
+4. **合并成最终报告** — `.fangyang/<kaio-ken-dir>/FINAL_REPORT.md`，并快照一份 `FINAL_REPORT-round-0.md`
+5. **判定质量门** — 覆盖率达标 **且** 验收通过 → 交付；否则进入阶段 9
 
-## 如何使用
+### 阶段 9：Goal 模式自动返工（主 Agent）
 
-### 快速开始
+质量门不通过时不再直接甩给用户，而是自己再来一轮：
 
-```bash
-cd /path/to/project
-bash /path/to/fangyang-le/scripts/kaio-ken-orchestrate.sh \
-  --request "开发一个全栈 AI 聊天应用，包含 Next.js 前端、Python FastAPI 后端、向量数据库、部署文档" \
+1. **写缺口任务书** — `GOAL-ROUND-N-GAPS.md`，只列「谁没交报告」「verify 失败输出的尾部」，不重发原始需求
+2. **派发返工** — 逐个 `herdr agent prompt <manager-slug>` 指向缺口文件 + `SPEC.md`，要求只补自己模块的缺口并重写报告
+3. **重新 Loop + 收割 + 重跑 verify** — 与首轮同一套流程
+4. **快照** — `FINAL_REPORT-round-N.md`，便于对比轮次差异
+5. **轮次上限** — `--max-goal-rounds`（0–10，默认 2）；用尽仍不通过则写 `.decisions.log` 并 `exit 1`，明确「需主 Agent 接管」，不会假装成功
+
+每个决策（启动模式、分解确认、Goal 轮次、升级）都落进 `.decisions.log`，事后可追溯为什么这么判。
+
+### 主 Agent 的职责清单
+
+- [ ] 与用户深入沟通需求（用 `SPEC_QUESTIONS.md` 逐条问，把结论写成 `SPEC.md`）
+- [ ] 自动识别请求类型（代码/报告/设计/混合）
+- [ ] 创建专属 workspace
+- [ ] 用 fanout.sh 启动 Manager 层
+- [ ] 派发 Manager 任务文件
+- [ ] 启动 Loop 管理循环
+- [ ] 定期检查每个 Manager 的进度
+- [ ] 处理阻塞和冲突
+- [ ] 收集所有 Manager 报告
+- [ ] 跑质量门（报告覆盖率 + `--verify`），不通过就 Goal 返工
+- [ ] 生成最终汇报（含每轮快照与升级说明）
+  --verify "pnpm typecheck && pnpm test && pnpm build" \
   --max-managers 3 \
+  --max-goal-rounds 2 \
   --cwd "$PWD"
 ```
+
+产物都在 `.fangyang/kaio-ken-<ts>/`：`SPEC.md`、`SPEC_QUESTIONS.md`、`.decisions.log`、`.manager-map`、`manager-<slug>-task.md`、`FINAL_REPORT.md` + 每轮 `FINAL_REPORT-round-N.md`、`GOAL-ROUND-N-GAPS.md`。
+
+### 参数速查
+
+| 参数 | 说明 |
+|---|---|
+| `--spec PATH` | 聊透后的需求规格，作为唯一事实来源；不传则按 request 推断草稿并在报告里标注「未确认维度」 |
+| `--verify CMD` | 最终验收命令，exit 0 才算过；不传则质量门只靠报告覆盖率，报告标注「未运行」 |
+| `--max-goal-rounds N` | 0–10，质量门不通过时最多自动返工几轮（默认 2） |
+| `--quality FLOAT` | 报告覆盖率阈值 0.7–1.0（默认 0.85） |
+| `--max-managers` / `--max-workers-per-manager` | 2–6，控制两层宽度 |
+| `--auto-mode 0` | 关键决策点先问用户；无 tty 时降级为自动继续并写 `.decisions.log` |
 
 ### 主 Agent 的职责清单
 
@@ -184,19 +216,18 @@ bash /path/to/fangyang-le/scripts/kaio-ken-orchestrate.sh \
 
 ### Manager 的职责清单
 
-- [ ] 理解自己的任务范围
-- [ ] 把范围分解为 2-6 个 Worker 任务
-- [ ] 写 Worker 任务文件
-- [ ] 在自己的 Tab 里用 fanout.sh 启动 Worker
-- [ ] 派发任务给每个 Worker
-- [ ] 等待所有 Worker 完成（harvest.sh --wait）
-- [ ] 收割结果（harvest.sh 无 --close）
-- [ ] 验证质量（测试、检查冲突）
-- [ ] 写完成汇报
-- [ ] 保持 idle，等待主 Agent
-
-### Worker 的职责清单
-
+├── scripts/
+│   ├── fanout.sh               # 启动 Agent 网格（复用现有；--dbz-tier 走七龙珠命名）
+│   ├── harvest.sh              # 收割 Agent 结果（复用现有）
+│   ├── ensure-herdr.sh         # 确保 herdr 可用（复用现有）
+│   ├── dbz-roster.sh           # 按层级领七龙珠角色 slug（新增）
+│   └── kaio-ken-orchestrate.sh # 主编排脚本（SPEC → 分解 → 开圈 → Loop → 质量门 → 返工）
+│
+├── lib/
+│   ├── decompose.sh            # 任务分解库
+│   ├── spec.sh                 # SPEC 推断 / 提问清单 / 质量门判据
+│   └── dbz-characters.sh       # 三线角色名池
+│
 - [ ] 读取任务文件和 acceptance 标准
 - [ ] 严格在 write scope 内修改文件
 - [ ] 完成所有 requirements
