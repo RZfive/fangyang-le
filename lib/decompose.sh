@@ -55,7 +55,8 @@ identify_task_type() {
 decompose_by_type() {
   local type="$1"
   local request="$2"
-  local max_managers="$3"
+  local cwd="${3:-}"
+  local max_managers="${4:-}"
 
   # 至少 2 个 Manager，最多 6 个（分层编排的下限/上限）
   if ! [[ "$max_managers" =~ ^[0-9]+$ ]]; then

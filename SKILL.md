@@ -118,6 +118,16 @@ rm -rf /tmp/fangyang-le
 
 主控/Manager/Worker 的名字分别从一线/二线/三线角色池分配，见 `lib/dbz-characters.sh`。命名只是趣味层，职责边界仍是「主控 - Manager - Worker」；撞名自动加 `-2/-3` 后缀。完整说明见 `KAIO_KEN_DBZ_THEME.md`。
 
+**展示名用七龙珠中文，herdr 运行时名用固定英文 slug**（`krillin` / `chichi` / `android17`），任务文件、agent 名、报告、监控四者保持一致，不拼西部牛仔前缀：
+
+```bash
+# 领 N 个不重复角色（输出 slug；--exclude/--used-from 自动避开已用角色）
+bash scripts/dbz-roster.sh --count 3 --tier manager --used-from "$TASKS_DIR"
+bash scripts/dbz-roster.sh --count 3 --tier worker  --used-from "$TASKS_DIR" --explain
+```
+
+fanout 只有带 `--dbz-tier manager|worker --dbz-owner <主 Agent 名>` 时才走这套命名；不带参数时仍用普通放羊的 `owner-task` 命名。
+
 ## Herdr 常用命令速查
 
 > 不确定当前版本语法时，先运行 `herdr --skill`，它会输出给 AI 使用的 herdr 控制说明。

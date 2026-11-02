@@ -377,21 +377,42 @@ Tab 3: ...
 
 ### 2️⃣ 命名规范
 
+**展示名用七龙珠中文，herdr 运行时名用固定英文 slug**，两者一一对应（`lib/dbz-characters.sh` 里的映射表是唯一来源）：
+
+| 层级 | 展示名 | 运行时 slug | 谁分配 |
+|---|---|---|---|
+| 一线主角 | 孙悟空（主 Agent） | 主 Agent 名由 `get_main_agent_name` 给出，只作 owner 记录 | 主 Agent 自己 |
+| 二线战士 | 克林 / 天津饭 / 乌龙 … | `krillin` / `tien` / `oolong` … | `dbz-roster.sh --tier manager` |
+| 三线小兵 | 琪琪 / 丹迪 / 饺子 … | `chichi` / `dende` / `chiaotzu` … | `dbz-roster.sh --tier worker` |
+
+```bash
+# 领角色：输出 "slug<TAB>展示名"，并把 slug 写进 .dbz-reserved 占位
+bash scripts/dbz-roster.sh --count 3 --tier manager --used-from .fangyang/kaio-ken-1703123456
+# 只看角色池（不占位）：--explain
 ```
-Manager 名字：来自七龙珠二线角色（克林、天津饭等）
-Manager slug：ASCII 小写（"克林" → "klin"）
-Worker 命名：manager-slug + "-" + 序号 + "-" + 任务简称
-  例子：klin-1-ui、klin-2-message、klin-3-settings
 
-任务文件位置：.fangyang/kaio-ken-<timestamp>/
-  例子：.fangyang/kaio-ken-1703123456/
-        ├─ klin-1-ui-task.md
-        ├─ klin-2-message-task.md
-        └─ ...
+命名规则：
 
-报告位置：
-  Manager 报告：.fangyang/kaio-ken-<timestamp>/klin-report.md
-  最终报告：.fangyang/kaio-ken-<timestamp>/FINAL_REPORT.md
+- **不拼前缀**：界王拳的 agent 名就是角色 slug（`krillin`、`chichi`），不再套 `goku-krillin-1-ui` 这类西部牛仔前缀。
+- **同一角色处处同名**：任务文件（`<slug>-task.md`）、herdr agent 名、报告（`<slug>-report.md`）、Loop 监控都用同一个 slug。
+- **撞名加后缀**：herdr 已有同名 agent 时追加 `-2`、`-3`（`chichi` → `chichi-2`），映射表记录真实名字与展示名的对应（`chichi-2<TAB>琪琪`）。
+- **后缀不污染角色名**：从带后缀的名字反查展示名会先剥掉 `-N` 再查表；`android17`、`android18` 这类本身带数字的角色不会被子串截断成 `android1`。
+- **占位防并发**：`dbz-roster.sh` 同时读 `*.dbz-names`（已启动）与 `.dbz-reserved`（已占位未启动），多路 fanout 并发领角色也不撞名。
+
+任务文件与报告位置：
+
+```
+.fangyang/kaio-ken-<timestamp>/
+  ├─ krillin-task.md                   # Manager 任务文件
+  ├─ tien-task.md
+  ├─ chichi-task.md                    # Worker 任务文件（Manager 建）
+  ├─ dende-task.md
+  ├─ herdr-<ts>-agents.tsv             # agent → pane/tab/workspace
+  ├─ herdr-<ts>-agents.tsv.dbz-names   # agent 名 → 中文展示名
+  ├─ .dbz-reserved                     # 角色占位（并发安全）
+  ├─ .manager-map                      # 模块 → Manager slug
+  ├─ krillin-report.md                 # Manager 报告
+  └─ FINAL_REPORT.md                   # 主 Agent 聚合报告
 ```
 
 ### 3️⃣ 进度监控
@@ -473,17 +494,23 @@ bash scripts/kaio-ken-orchestrate.sh \
 bash scripts/fanout.sh \
   --count 3 \
   --work "Manager 的任务名" \
-  --tasks "worker-a,worker-b,worker-c" \
+  --tasks "chichi,dende,chiaotzu" \
+  --dbz-tier worker \
+  --dbz-owner "克林" \
+  --in-tab \
   --workspace "$HERDR_WORKSPACE_ID" \
   --cwd "." \
-  --tasks-dir ".fangyang/kaio-ken-<timestamp>"
+  --tasks-dir .fangyang/kaio-ken-<timestamp>
 ```
+
+`--tasks` 必须是 `dbz-roster.sh --tier worker` 领到的 slug，顺序与 Worker 任务包一一对应；
+不带 `--dbz-tier` 时 fanout 仍走普通放羊的西部牛仔命名（`owner-task`），两条链路互不影响。
 
 ### Manager 派发任务
 
 ```bash
-herdr agent prompt "worker-name" \
-  "Read .fangyang/kaio-ken-<timestamp>/worker-name-task.md and execute it."
+herdr agent prompt "chichi" \
+  "Read .fangyang/kaio-ken-<timestamp>/chichi-task.md and execute it."
 ```
 
 ### Manager 收割 Worker
@@ -496,14 +523,17 @@ bash scripts/harvest.sh \
 ### 主 Agent 监控
 
 ```bash
-# 查看所有 Manager 状态
-herdr agent list | jq '.result.agents[] | select(.name | test("manager"))'
+# 界王拳的 agent 名就是角色 slug，直接从 manifest 取，不要按 manager/worker 字串过滤
+herdr agent list | jq -r '.result.agents[] | "\(.name)\t\(.agent_status)"'
 
-# 查看特定 Manager 的输出
-herdr agent read "manager-name" --lines 100
+# 只看本次编排圈里启动的 agent
+cut -f1 .fangyang/kaio-ken-<timestamp>/herdr-*-agents.tsv | grep -v '^name$'
 
-# 检查被阻塞的 Manager
-herdr agent read "manager-name" --source visible
+# 查看特定 agent 的输出
+herdr agent read "krillin" --lines 100
+
+# 检查被阻塞的 agent
+herdr agent read "chichi" --source visible
 ```
 
 ---

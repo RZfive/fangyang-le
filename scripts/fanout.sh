@@ -58,6 +58,9 @@ Options:
                    manifest records "#mode=in-tab" and harvest --close-tab then
                    closes only the worker panes, never the Manager's tab.
   --focus          Focus the new tab after creation
+  --dbz-tier TIER  界王拳专用命名：manager 用二线角色、worker 用三线角色。
+                   仅界王拳传此参数；普通放羊继续使用西部牛仔命名。
+  --dbz-owner NAME 界王拳主 Agent 的一线主角名（供同一任务的 Manager/Worker 使用）
 EOF
 }
 
@@ -74,12 +77,28 @@ while [[ $# -gt 0 ]]; do
     --prefix) PREFIX="$2"; shift 2 ;;
     --focus) FOCUS=1; shift ;;
     --in-tab) IN_TAB=1; shift ;;
+    --dbz-tier) DBZ_TIER="$2"; shift 2 ;;
+    --dbz-owner) DBZ_OWNER="$2"; shift 2 ;;
     --workspace) WORKSPACE="$2"; shift 2 ;;
+
     --no-bootstrap) BOOTSTRAP=0; shift ;;
 
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
+DBZ_TIER="${DBZ_TIER:-}"
+DBZ_OWNER="${DBZ_OWNER:-}"
+if [[ -n "$DBZ_TIER" ]]; then
+  source "$SCRIPT_DIR/../lib/dbz-characters.sh"
+  if [[ "$DBZ_TIER" != "manager" && "$DBZ_TIER" != "worker" ]]; then
+    echo "--dbz-tier must be manager or worker" >&2
+    exit 2
+  fi
+  if [[ -z "$DBZ_OWNER" ]]; then
+    echo "--dbz-owner is required with --dbz-tier" >&2
+    exit 2
+  fi
+fi
 
 if [[ ! -d "$CWD" ]]; then
   echo "--cwd is not a directory: $CWD" >&2
@@ -232,12 +251,25 @@ if [[ -z "$WORKSPACE" ]]; then
     EXTERNAL=1
     "$SCRIPT_DIR/ensure-herdr.sh"
     if [[ -z "$OWNER" || "$OWNER" == "auto" ]]; then
-      OWNER="$(pick_western_owner "" "")"
-      OWNER_SRC="western, external bootstrap"
+      if [[ -n "$DBZ_TIER" ]]; then
+        OWNER="$DBZ_OWNER"
+        if [[ "$DBZ_TIER" == "manager" ]]; then
+          OWNER_SRC="界王拳一线主角（external bootstrap）"
+        else
+          OWNER_SRC="界王拳二线战士（external bootstrap）"
+        fi
+      else
+        OWNER="$(pick_western_owner "" "")"
+        OWNER_SRC="western, external bootstrap"
+      fi
     fi
-    RANCH_JSON="$(herdr workspace create --cwd "$CWD" --label "${OWNER}的牧场 · ${WORK}" --no-focus)"
+    RANCH_LABEL="${OWNER}的牧场 · ${WORK}"
+    if [[ "$DBZ_TIER" == "manager" ]]; then
+      RANCH_LABEL="${OWNER}的界王拳 · ${WORK}"
+    fi
+    RANCH_JSON="$(herdr workspace create --cwd "$CWD" --label "$RANCH_LABEL" --no-focus)"
     WORKSPACE="$(printf '%s' "$RANCH_JSON" | json_get result workspace workspace_id)"
-    echo "external:  no herdr pane detected — bootstrapped herdr, created ranch workspace $WORKSPACE (${OWNER}的牧场 · ${WORK})"
+    echo "external:  no herdr pane detected — bootstrapped herdr, created ranch workspace $WORKSPACE (${RANCH_LABEL})"
     echo "external:  attach any time in a terminal with: herdr"
   else
     echo "Not running inside a herdr pane (HERDR_WORKSPACE_ID is unset) and --no-bootstrap was given." >&2
@@ -303,6 +335,13 @@ if [[ -n "${HERDR_TAB_ID:-}" ]]; then
   CTRL_TAB_ORIG="$(herdr tab get "$HERDR_TAB_ID" 2>/dev/null | json_get result tab label 2>/dev/null || true)"
 fi
 OWNER_SRC="${OWNER_SRC:-explicit}"
+if [[ "$DBZ_TIER" == "manager" ]]; then
+  OWNER="$DBZ_OWNER"
+  OWNER_SRC="界王拳一线主角"
+elif [[ "$DBZ_TIER" == "worker" ]]; then
+  OWNER="$DBZ_OWNER"
+  OWNER_SRC="界王拳二线战士"
+fi
 if [[ -z "$OWNER" || "$OWNER" == "auto" ]]; then
   OWNER_SRC="explicit"
   WS_LABELS=""
@@ -322,8 +361,13 @@ except Exception:
   fi
 fi
 LABEL="${LABEL:-${OWNER}的羊圈 · ${WORK}}"
+if [[ "$DBZ_TIER" == "manager" ]]; then
+  LABEL="${OWNER}的界王拳 · ${WORK}"
+elif [[ "$DBZ_TIER" == "worker" ]]; then
+  LABEL="${OWNER}的三线小队 · ${WORK}"
+fi
 if (( IN_TAB == 1 )); then
-  LABEL="${LABEL:-${OWNER} · ${WORK}}"
+  LABEL="${OWNER} · ${WORK}"
 fi
 
 MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-agents.tsv"
@@ -409,7 +453,13 @@ fi
 printf 'name\tpane\ttab\tworkspace\n' > "$MANIFEST"
 # "#"-prefixed metadata lines are ignored by harvest's TSV parser.
 printf '%s\n' "$MODE_META" >> "$MANIFEST"
+if [[ -n "$DBZ_TIER" ]]; then
+  printf '#dbz_tier=%s\n#dbz_owner=%s\n' "$DBZ_TIER" "$DBZ_OWNER" >> "$MANIFEST"
+  # 每次 fanout 重写映射表，避免上一次的残留条目混进本次角色名单。
+  : > "$MANIFEST.dbz-names"
+fi
 if [[ -n "$CTRL_TAB_META_ID" ]]; then
+
   printf '%s\n%s\n' "$CTRL_TAB_META_ID" "$CTRL_TAB_META_LABEL" >> "$MANIFEST"
 fi
 
@@ -434,7 +484,13 @@ echo "agents:"
 # (a second fold with the same owner and task names) get -2/-3 suffixes.
 # The prefix is the owner's ASCII slug — herdr rejects non-ASCII agent names.
 OWNER_PREFIX="$(owner_agent_prefix "$OWNER")"
+if [[ -n "$DBZ_TIER" ]]; then
+  # 界王拳链路：agent 前缀就是上线的角色 slug（Manager=二线、Worker=三线），
+  # 不再叠加西部牛仔的 owner 前缀，避免出现 ascii 前缀 + 中文角色的混搭。
+  OWNER_PREFIX="$(dbz_agent_slug "$OWNER")"
+fi
 ALL_AGENT_NAMES="$(herdr agent list 2>/dev/null | python3 -c 'import json,sys
+
 try:
     obj = json.load(sys.stdin)
     print("\n".join(str(a.get("name") or "") for a in obj["result"]["agents"]))
@@ -445,8 +501,14 @@ agent_name_taken() {
 }
 
 for ((i = 0; i < COUNT; i++)); do
-  if (( ${#TASK_NAMES[@]} > 0 )); then
-    # Chinese task names slug to "" — fall back to task<N> so two Chinese
+  if [[ -n "$DBZ_TIER" ]]; then
+    BASE="${TASK_NAMES[$i]:-}"
+    if [[ -z "$BASE" ]] || ! [[ "$BASE" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+      echo "Error: --dbz-tier requires explicit ASCII character slugs via --tasks" >&2
+      exit 2
+    fi
+    DISPLAY_NAME="$(dbz_agent_display_name "$BASE")"
+  elif (( ${#TASK_NAMES[@]} > 0 )); then
     # names in one flock stay distinct instead of both becoming "<owner>-task".
     BASE="${OWNER_PREFIX}-$(slug_or "${TASK_NAMES[$i]}" "task$((i + 1))")"
   else
@@ -454,6 +516,7 @@ for ((i = 0; i < COUNT; i++)); do
   fi
   BASE="$(ascii_slug "$BASE")"
   NAME="$BASE"
+
   SUFFIX=2
   while agent_name_taken "$NAME"; do
     NAME="${BASE}-${SUFFIX}"
@@ -467,6 +530,11 @@ ${NAME}"
   if herdr agent start "$NAME" --kind "$KIND" --pane "$PANE" --timeout 120000 >/dev/null; then
     printf '  %-20s %s\n' "$NAME" "$PANE"
     printf '%s\t%s\t%s\t%s\n' "$NAME" "$PANE" "$TAB_ID" "$WORKSPACE" >> "$MANIFEST"
+    # 名字映射只在 agent 真正启动成功后写入：否则启动失败的记录会让
+    # 派发、监控和收割去找一个不存在的 agent。
+    if [[ -n "$DBZ_TIER" ]]; then
+      printf '%s\t%s\n' "$NAME" "$DISPLAY_NAME" >> "$MANIFEST.dbz-names"
+    fi
   else
     printf '  %-20s %s  (start failed)\n' "$NAME" "$PANE" >&2
   fi

@@ -28,6 +28,18 @@
 #       creates a dedicated ranch workspace, defaults kind to claude,
 #       skips controller-tab renaming, and records the ranch in the manifest
 #   T16 fanout --no-bootstrap outside a herdr pane fails fast with exit 2
+#   T17 界王拳 Manager uses 二线 role slugs verbatim; normal flocks keep the
+#       western owner prefix
+#   T18 Worker tier collision suffixes stay ASCII and map back to 中文名
+#   T19 explicit 界王拳 slugs are validated (Chinese slug -> exit 2)
+#   T20 every pooled DBZ character has an ASCII slug and a display name
+#   T21 dbz-roster never repeats a slug and avoids slugs reserved in the dir
+#   T22 display-name fallback does not truncate slugs that end in digits
+#   T23 kaio-ken-orchestrate.sh rejects bad args (--cwd/--auto-mode/--request)
+#   T24 --auto-mode 1 runs the whole pipeline unattended and records decisions
+#   T25 --auto-mode 0 without a tty degrades to "continue" and logs it
+#   T26 KAIO_KEN_CONFIRM_ANSWERS=n aborts at the breakdown gate (exit 3)
+#   T27 the same variable lets the second gate (before Manager launch) abort
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,14 +101,57 @@ PY
   "agent list")
     if [ -f "$TEST_DIR/agents.json" ]; then
       cat "$TEST_DIR/agents.json"
+    elif [ -f "$TEST_DIR/track_agents" ]; then
+      # Agent-tracking mode (orchestrator tests): report the agents this run
+      # started, so loop monitoring sees real names instead of a static list.
+      python3 - "$TEST_DIR" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+names = []
+p = os.path.join(d, "started_agents")
+if os.path.exists(p):
+    for line in open(p):
+        n = line.strip()
+        if n and n not in names:
+            names.append(n)
+default = "done"
+sp = os.path.join(d, "agent_status")
+if os.path.exists(sp):
+    default = open(sp).read().strip() or default
+agents = []
+for n in names:
+    per = os.path.join(d, "status_" + n)
+    st = default
+    if os.path.exists(per):
+        st = open(per).read().strip() or default
+    agents.append({"name": n, "agent_status": st})
+print(json.dumps({"result": {"agents": agents}}))
+PY
     else
       echo '{"result":{"agents":[]}}'
     fi
     ;;
   "agent start")
+    if [ -f "$TEST_DIR/track_agents" ]; then
+      printf '%s\n' "$3" >> "$TEST_DIR/started_agents"
+    fi
     echo '{"result":{"agent":{"agent":"x"}}}'
     ;;
   "agent wait")
+    exit 0
+    ;;
+  "agent prompt")
+    # Report-writing mode: the orchestrator asks each Manager to write
+    # <task_dir>/<slug>-report.md; emulate a Manager that actually does it.
+    if [ -f "$TEST_DIR/write_reports" ]; then
+      for a in "$@"; do
+        target="$(printf '%s' "$a" | grep -oE '[^[:space:]]+-report\.md' | head -n 1)"
+        if [ -n "$target" ]; then
+          mkdir -p "$(dirname "$target")"
+          printf '# %s report\n\nstub report\n' "$3" > "$target"
+        fi
+      done
+    fi
     exit 0
     ;;
   "agent read")
@@ -412,6 +467,232 @@ else
 fi
 assert_contains "explains --no-bootstrap" "$TEST_DIR/t16-out.txt" "--no-bootstrap"
 assert_not_contains "no bootstrap attempted" "$LOG" "workspace create"
+
+echo "== T17: 界王拳 Manager 使用二线角色，普通放羊不受影响 =="
+mkdir -p "$TEST_DIR/repo17"
+rm -f "$TEST_DIR/agents.json"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo17" --count 2 \
+  --owner 孙悟空 --work 界王拳 --dbz-tier manager --dbz-owner 孙悟空 \
+  --tasks krillin,tien > "$TEST_DIR/t17-out.txt" 2>&1
+assert_contains "uses exact krillin slug" "$LOG" "agent start krillin --kind claude"
+assert_contains "uses exact tien slug" "$LOG" "agent start tien --kind claude"
+assert_not_contains "no western prefix" "$LOG" "goku-"
+T17_MANIFEST="$(find "$TEST_DIR/repo17/.fangyang" -name '*-agents.tsv' | head -n 1)"
+assert_contains "manifest tier metadata" "$T17_MANIFEST" "#dbz_tier=manager"
+assert_contains "manifest owner metadata" "$T17_MANIFEST" "#dbz_owner=孙悟空"
+assert_contains "display map has 克林" "$T17_MANIFEST.dbz-names" $'krillin\t克林'
+assert_contains "display map has 天津饭" "$T17_MANIFEST.dbz-names" $'tien\t天津饭'
+
+echo "== T18: 界王拳 Worker 重名后缀与中文映射 =="
+mkdir -p "$TEST_DIR/repo18"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo18" --count 3 \
+  --owner 克林 --work 修炼 --dbz-tier worker --dbz-owner 克林 \
+  --tasks chichi,dende,chichi > "$TEST_DIR/t18-out.txt" 2>&1
+assert_contains "worker uses chichi" "$LOG" "agent start chichi --kind claude"
+assert_contains "worker uses dende" "$LOG" "agent start dende --kind claude"
+assert_contains "duplicate gets suffix" "$LOG" "agent start chichi-2 --kind claude"
+T18_MANIFEST="$(find "$TEST_DIR/repo18/.fangyang" -name '*-agents.tsv' | head -n 1)"
+assert_contains "actual suffix mapped" "$T18_MANIFEST.dbz-names" $'chichi-2\t琪琪'
+assert_contains "worker owner metadata" "$T18_MANIFEST" "#dbz_owner=克林"
+
+echo "== T19: 界王拳显式 slug 校验，不用西部命名 =="
+mkdir -p "$TEST_DIR/repo19"
+: > "$LOG"
+if bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo19" --count 1 \
+  --owner 夜枭 --work 非法 --dbz-tier manager --dbz-owner 孙悟空 \
+  --tasks 克林 > "$TEST_DIR/t19-out.txt" 2>&1; then
+  fail "Chinese runtime slug should be rejected"
+else
+  [ "$?" -eq 2 ] && pass "invalid slug exits 2" || fail "wrong invalid-slug exit"
+fi
+assert_contains "explains ASCII slug" "$TEST_DIR/t19-out.txt" "ASCII"
+mkdir -p "$TEST_DIR/repo19-normal"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo19-normal" --count 2 \
+  --owner 夜枭 --work 普通 --tasks ui,api > "$TEST_DIR/t19-normal-out.txt" 2>&1
+assert_contains "normal flock still prefixed" "$LOG" "agent start night-owl-ui --kind claude"
+assert_contains "normal second task" "$LOG" "agent start night-owl-api --kind claude"
+
+echo "== T20: 七龙珠角色库双向映射覆盖 =="
+if bash -c 'source "$1"; for name in "${MAIN_AGENT_NAMES[@]}" "${MANAGER_AGENT_NAMES[@]}" "${WORKER_AGENT_NAMES[@]}"; do slug=$(dbz_agent_slug "$name") || exit 1; [[ "$slug" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || exit 1; display=$(dbz_agent_display_name "$slug"); [[ -n "$display" && "$display" != dbz-- ]] || exit 1; done' _ "$REPO_DIR/lib/dbz-characters.sh"; then
+  pass "all pooled characters have ASCII slugs and display names"
+else
+  fail "pooled character mapping incomplete"
+fi
+if bash -c 'source "$1"; [[ $(dbz_agent_slug 兰奇) == launch && $(dbz_agent_slug 普亚) == puar && $(dbz_agent_slug 乌布) == uub ]]' _ "$REPO_DIR/lib/dbz-characters.sh"; then
+  pass "legacy Chinese aliases map to canonical slugs"
+else
+  fail "legacy aliases broken"
+fi
+
+echo "== T21: dbz-roster 分配不重复角色并避开已用 slug =="
+mkdir -p "$TEST_DIR/roster21"
+ROSTER_FIRST="$(bash "$REPO_DIR/scripts/dbz-roster.sh" --count 3 --tier worker \
+  --seed 7 --used-from "$TEST_DIR/roster21" 2>"$TEST_DIR/t21-err-1.txt")"
+FIRST_LINE_COUNT="$(printf '%s\n' "$ROSTER_FIRST" | grep -c . || true)"
+if [ "$FIRST_LINE_COUNT" -eq 3 ]; then
+  pass "roster returns exactly 3 slugs"
+else
+  fail "roster returned $FIRST_LINE_COUNT slugs, expected 3"
+fi
+FIRST_UNIQUE="$(printf '%s\n' "$ROSTER_FIRST" | sort -u | grep -c . || true)"
+[ "$FIRST_UNIQUE" -eq "$FIRST_LINE_COUNT" ] && pass "roster slugs are unique" || fail "roster produced duplicate slugs"
+if printf '%s\n' "$ROSTER_FIRST" | grep -qvE '^[a-z][a-z0-9_-]{0,31}$'; then
+  fail "roster emitted a non-ASCII slug"
+else
+  pass "roster slugs are ASCII"
+fi
+assert_contains "roster reserves allocated slugs" "$TEST_DIR/roster21/.dbz-reserved" "$(printf '%s\n' "$ROSTER_FIRST" | head -n 1)"
+
+ROSTER_SECOND="$(bash "$REPO_DIR/scripts/dbz-roster.sh" --count 3 --tier worker \
+  --seed 7 --used-from "$TEST_DIR/roster21" 2>"$TEST_DIR/t21-err-2.txt")"
+ROSTER_OVERLAP="$(comm -12 <(printf '%s\n' "$ROSTER_FIRST" | sort -u) <(printf '%s\n' "$ROSTER_SECOND" | sort -u) | grep -c . || true)"
+if [ "$ROSTER_OVERLAP" -eq 0 ]; then
+  pass "second roster avoids slugs already taken in the same task dir"
+else
+  fail "second roster re-issued $ROSTER_OVERLAP slug(s)"
+fi
+
+ROSTER_EXPLAIN="$(bash "$REPO_DIR/scripts/dbz-roster.sh" --count 2 --tier manager \
+  --seed 3 --explain)"
+if printf '%s\n' "$ROSTER_EXPLAIN" | grep -qE '^[a-z][a-z0-9_-]*\t[^[:space:]]+$'; then
+  pass "--explain prints slug<TAB>display name"
+else
+  fail "--explain output missing display names: $ROSTER_EXPLAIN"
+fi
+if printf '%s\n' "$ROSTER_EXPLAIN" | grep -q 'dbz--'; then
+  fail "--explain produced a broken display name"
+else
+  pass "--explain never emits dbz-- placeholders"
+fi
+
+echo "== T22: 展示名回退不会被自带数字的 slug 截断 =="
+: > "$TEST_DIR/empty-map.tsv"
+if bash -c '
+  source "$1"
+  [[ "$(dbz_base_slug android17)" == android17 ]] || exit 1
+  [[ "$(dbz_base_slug android17-2)" == android17 ]] || exit 1
+  [[ "$(dbz_base_slug chichi-2)" == chichi ]] || exit 1
+  [[ "$(dbz_manifest_display_name "$2" android17)" == 17号 ]] || exit 1
+  [[ "$(dbz_manifest_display_name "$2" android17-2)" == 17号 ]] || exit 1
+  [[ "$(dbz_manifest_display_name "$2" chichi-3)" == 琪琪 ]] || exit 1
+' _ "$REPO_DIR/lib/dbz-characters.sh" "$TEST_DIR/empty-map.tsv"; then
+  pass "display-name fallback strips only collision suffixes"
+else
+  fail "display-name fallback truncates numeric slugs"
+fi
+
+echo "== T23: 界王拳编排参数校验（--cwd / --auto-mode / --request / 数量边界）=="
+KAIO="$REPO_DIR/scripts/kaio-ken-orchestrate.sh"
+mkdir -p "$TEST_DIR/kaio23"
+if bash "$KAIO" --request "测试" --cwd "$TEST_DIR/kaio23-missing" \
+  > "$TEST_DIR/t23a-out.txt" 2>&1; then
+  fail "nonexistent --cwd should fail"
+else
+  [ "$?" -eq 2 ] && pass "nonexistent --cwd exits 2" || fail "nonexistent --cwd wrong exit"
+fi
+assert_contains "explains --cwd" "$TEST_DIR/t23a-out.txt" "--cwd is not a directory"
+if bash "$KAIO" --request "测试" --cwd "$TEST_DIR/kaio23" --auto-mode 2 \
+  > "$TEST_DIR/t23b-out.txt" 2>&1; then
+  fail "--auto-mode 2 should fail"
+else
+  [ "$?" -eq 2 ] && pass "invalid --auto-mode exits 2" || fail "invalid --auto-mode wrong exit"
+fi
+assert_contains "explains --auto-mode" "$TEST_DIR/t23b-out.txt" "--auto-mode must be 0 or 1"
+if bash "$KAIO" --cwd "$TEST_DIR/kaio23" > "$TEST_DIR/t23c-out.txt" 2>&1; then
+  fail "missing --request should fail"
+else
+  [ "$?" -eq 2 ] && pass "missing --request exits 2" || fail "missing --request wrong exit"
+fi
+assert_contains "explains --request" "$TEST_DIR/t23c-out.txt" "--request is required"
+if bash "$KAIO" --request "测试" --cwd "$TEST_DIR/kaio23" --max-managers 1 \
+  > "$TEST_DIR/t23d-out.txt" 2>&1; then
+  fail "--max-managers 1 should fail"
+else
+  [ "$?" -eq 2 ] && pass "--max-managers out of range exits 2" || fail "--max-managers wrong exit"
+fi
+if [ -d "$TEST_DIR/kaio23/.fangyang" ]; then
+  fail "parameter validation must not create .fangyang"
+else
+  pass "parameter validation leaves cwd untouched"
+fi
+
+echo "== T24: 界王拳 --auto-mode 1 全自动跑通并自动继续所有决策 =="
+WS24="$TEST_DIR/kaio24/ws"
+mkdir -p "$WS24"
+( cd "$WS24" && git init -q >/dev/null 2>&1 ) || true
+touch "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+if bash "$KAIO" --request "开发一个全栈 AI 聊天应用" --max-managers 2 \
+  --max-workers-per-manager 2 --auto-mode 1 --loop-interval 1 --max-loops 3 \
+  --cwd "$WS24" --verify "true" > "$TEST_DIR/t24-out.txt" 2>&1; then
+  pass "auto-mode 1 orchestration exits 0"
+else
+  fail "auto-mode 1 orchestration failed"; tail -n 40 "$TEST_DIR/t24-out.txt"
+fi
+T24_TASK_DIR="$(ls -d "$WS24"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+assert_contains "auto decisions recorded" "$T24_TASK_DIR/.decisions.log" "自动继续（--auto-mode 1）"
+assert_contains "final report says gate passed" "$T24_TASK_DIR/FINAL_REPORT.md" "质量门: 通过"
+assert_contains "report coverage is complete" "$T24_TASK_DIR/FINAL_REPORT.md" "报告覆盖: 2/2"
+assert_contains "verify command ran" "$T24_TASK_DIR/FINAL_REPORT.md" "通过 (exit 0)"
+T24_STARTED="$(grep -c . "$TEST_DIR/started_agents" 2>/dev/null || true)"
+[ "${T24_STARTED:-0}" -eq 2 ] && pass "two DBZ managers started" \
+  || fail "expected 2 started agents, got ${T24_STARTED:-0}"
+assert_not_contains "no interactive prompts in auto mode" "$TEST_DIR/t24-out.txt" "[preset]"
+
+echo "== T25: --auto-mode 0 无 tty 时降级为自动继续并留痕 =="
+WS25="$TEST_DIR/kaio25"
+mkdir -p "$WS25"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+bash "$KAIO" --request "写一份竞品分析报告" --max-managers 2 --auto-mode 0 \
+  --loop-interval 1 --max-loops 2 --cwd "$WS25" --verify "true" \
+  > "$TEST_DIR/t25-out.txt" 2>&1 < /dev/null || true
+T25_TASK_DIR="$(ls -d "$WS25"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+assert_contains "warns about missing tty" "$TEST_DIR/t25-out.txt" "没有可交互终端"
+assert_contains "decision log records fallback" "$T25_TASK_DIR/.decisions.log" "无 tty，降级"
+assert_contains "decision log records interactive mode" "$T25_TASK_DIR/.decisions.log" "--auto-mode 0（交互确认）"
+
+WS26="$TEST_DIR/kaio26"
+mkdir -p "$WS26"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+if KAIO_KEN_CONFIRM_ANSWERS=n bash "$KAIO" --request "开发一个全栈应用" \
+  --max-managers 2 --auto-mode 0 --cwd "$WS26" < /dev/null \
+  > "$TEST_DIR/t26-out.txt" 2>&1; then
+  fail "preset 'n' should abort the run"
+else
+  [ "$?" -eq 3 ] && pass "preset 'n' exits 3" || fail "preset 'n' wrong exit"
+fi
+T26_TASK_DIR="$(ls -d "$WS26"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+assert_contains "abort explained" "$TEST_DIR/t26-out.txt" "未创建 workspace"
+assert_contains "decision log records abort" "$T26_TASK_DIR/.decisions.log" "预设答案中止"
+assert_not_contains "no workspace created after abort" "$LOG" "workspace create"
+assert_not_contains "no agent started after abort" "$LOG" "agent start"
+
+WS27="$TEST_DIR/kaio27"
+mkdir -p "$WS27"
+: > "$TEST_DIR/started_agents"
+: > "$LOG"
+if KAIO_KEN_CONFIRM_ANSWERS=y,n bash "$KAIO" --request "开发一个全栈应用" \
+  --max-managers 2 --auto-mode 0 --cwd "$WS27" < /dev/null \
+  > "$TEST_DIR/t27-out.txt" 2>&1; then
+  fail "second confirmation 'n' should abort"
+else
+  [ "$?" -eq 3 ] && pass "second confirmation abort exits 3" || fail "second abort wrong exit"
+fi
+assert_contains "workspace created before second gate" "$LOG" "workspace create"
+assert_not_contains "no manager started after second gate" "$LOG" "agent start"
+assert_contains "second gate abort explained" "$TEST_DIR/t27-out.txt" "未启动任何 agent"
+T27_TASK_DIR="$(ls -d "$WS27"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+T27_ABORTS="$(grep -c '预设答案中止' "$T27_TASK_DIR/.decisions.log" 2>/dev/null || true)"
+[ "${T27_ABORTS:-0}" -eq 1 ] && pass "exactly one aborted decision recorded" \
+  || fail "expected 1 aborted decision, got ${T27_ABORTS:-0}"
+
+rm -f "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
 
 echo
 if [ "$FAIL" -eq 0 ]; then

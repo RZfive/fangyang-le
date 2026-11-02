@@ -20,23 +20,41 @@ Do not commit.
 - 你需要进一步分解成 2-6 个独立的 Worker 任务包
 
 ### 第二步：分解任务成 Worker 包
-在 `{{KAIO_KEN_DIR}}/` 目录下创建 Worker 任务文件。每个 Worker 任务文件应该包含：
+在 `{{TASK_DIR}}/` 目录下创建 Worker 任务文件。每个 Worker 任务文件应该包含：
 - **Write scope**：明确的文件范围（宽勿窄）
 - **Requirements**：清晰的要求
 - **Acceptance**：验收标准
 
-### 第三步：在你的 Tab 里启动 Worker
-使用 fanout.sh 在你的 Tab（当前 Tab）里启动 2-6 个 Worker Agent。
+### 第三步：领取三线角色名并启动 Worker
+Worker 名字**不要手写**。向 roster 领一份不重复的三线角色 slug（`{{MAX_WORKERS}}` 是本次分配的 Worker 上限）：
+```bash
+WORKER_SLUGS="$(bash {{SKILL_DIR}}/scripts/dbz-roster.sh \
+  --count {{MAX_WORKERS}} \
+  --tier worker \
+  --used-from {{TASK_DIR}})"
+echo "$WORKER_SLUGS"
+```
+任务文件的内容照 `{{SKILL_DIR}}/templates/worker-task.md` 的格式填（write scope / read first / goal / requirements / acceptance / 汇报），
+然后按井号顺序把 slug 写进 Worker 任务文件名（`{{TASK_DIR}}/<slug>-task.md`），
+再用同一份 slug 启动 Worker，保证任务文件、agent 名、汇报三者一致：
+
 ```bash
 cd {{CWD}}
+WORKER_CSV="$(printf '%s\n' "$WORKER_SLUGS" | paste -sd, -)"
 bash {{SKILL_DIR}}/scripts/fanout.sh \
-  --count 3 \
+  --count "$(printf '%s\n' "$WORKER_SLUGS" | grep -c .)" \
   --work "{{MANAGER_NAME}} 的工作" \
-  --tasks worker-a,worker-b,worker-c \
+  --dbz-tier worker \
+  --dbz-owner "{{MANAGER_NAME}}" \
+  --in-tab \
   --workspace "$HERDR_WORKSPACE_ID" \
   --cwd "." \
-  --tasks-dir {{KAIO_KEN_DIR}}
+  --tasks-dir {{TASK_DIR}} \
+  --tasks "$WORKER_CSV"
 ```
+
+`--tasks-dir` 用绝对路径 `{{TASK_DIR}}`，这样无论 Manager 从哪个目录执行，
+任务文件和 manifest 都落在同一个羊圈里。
 
 **重要**：
 - `--workspace` 必须是你当前的 workspace（固定用 `$HERDR_WORKSPACE_ID`）
@@ -55,7 +73,7 @@ bash {{SKILL_DIR}}/scripts/fanout.sh \
 - 验证跨 Worker 的集成点
 
 ### 第七步：写报告
-在 `{{KAIO_KEN_DIR}}/{{MANAGER_SLUG}}-report.md` 写一份汇报，包括：
+在 `{{TASK_DIR}}/{{MANAGER_SLUG}}-report.md` 写一份汇报，包括：
 - 完成情况（✓ 完成 / ⚠️ 部分完成 / ❌ 失败）
 - 每个 Worker 的产出摘要
 - 发现的问题
