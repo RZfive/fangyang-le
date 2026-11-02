@@ -55,6 +55,10 @@ install_files() {
   if compgen -G "$src/KAIO_KEN*.md" >/dev/null; then
     cp "$src"/KAIO_KEN*.md "$dest/"
   fi
+  # 界王拳启动器（小写文件名）：用户说"界王拳"时的触发说明
+  if [[ -f "$src/kaio-ken-starter.md" ]]; then
+    cp "$src/kaio-ken-starter.md" "$dest/"
+  fi
   chmod +x "$dest/install.sh" "$dest"/scripts/*.sh
   if [[ -f "$dest/bootstrap.sh" ]]; then chmod +x "$dest/bootstrap.sh"; fi
   if [[ -f "$dest/uninstall.sh" ]]; then chmod +x "$dest/uninstall.sh"; fi
