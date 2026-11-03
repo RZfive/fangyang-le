@@ -43,19 +43,17 @@ echo "$WORKER_SLUGS"
 再用同一份 slug 启动 Worker，保证任务文件、agent 名、汇报三者一致：
 
 ```bash
-cd {{CWD}}
 WORKER_CSV="$(printf '%s\n' "$WORKER_SLUGS" | paste -sd, -)"
-bash {{SKILL_DIR}}/scripts/fanout.sh \\
-  --count "$(printf '%s\\n' "$WORKER_SLUGS" | grep -c .)" \\
-  --work "{{MANAGER_NAME}} 的工作" \\
-  --dbz-tier worker \\
-  --dbz-owner "{{MANAGER_SLUG}}" \\
-  --dbz-parent "{{MANAGER_SLUG}}" \\
-  --dbz-root "{{MAIN_AGENT_SLUG}}" \\
-  --in-tab \\
-  --workspace "$HERDR_WORKSPACE_ID" \\
-  --cwd "." \\
-  --tasks-dir {{TASK_DIR}} \\
+bash {{SKILL_DIR}}/scripts/fanout.sh \
+  --count "$(printf '%s\n' "$WORKER_SLUGS" | grep -c .)" \
+  --work "Worker圈" \
+  --dbz-tier worker \
+  --dbz-owner "{{MANAGER_SLUG}}" \
+  --dbz-parent "{{MANAGER_SLUG}}" \
+  --dbz-root "{{MAIN_AGENT_SLUG}}" \
+  --workspace "$HERDR_WORKSPACE_ID" \
+  --cwd "{{CWD}}" \
+  --tasks-dir {{TASK_DIR}} \
   --tasks "$WORKER_CSV"
 ```
 
@@ -64,11 +62,15 @@ bash {{SKILL_DIR}}/scripts/fanout.sh \\
 
 **重要**：
 - `--workspace` 必须是你当前的 workspace（固定用 `$HERDR_WORKSPACE_ID`）
-- Worker 会在你的 Tab 里作为网格 pane 出现
-- 这样所有 Worker 都汇聚在你这个 Manager Tab 内，用户可以清晰看到组织结构
+- `--cwd` 用上面的绝对路径 `{{CWD}}`：fanout 按你执行命令的目录解析相对路径，
+  从任务目录里跑 `--cwd "."` 会把 Worker 全部起错目录（相对路径失效）
+- 不传 `--in-tab`：Worker 圈会打开自己的新 Tab（网格并列），指挥部 Tab 保持
+  只有 Manager，workspace 里领导和 Worker 一眼可分
+- `--dbz-root` 必须传一线主角 `{{MAIN_AGENT_SLUG}}`：漏传或传成你自己会被
+  fanout 直接拒绝（防「18号·18号的界王拳」这类双写标签）
 
 ### 第四步：派发任务给 Worker
-读取每个 Worker 的任务文件，派发给对应的 Worker。Worker 会在你的网格 pane 里独立工作。
+读取每个 Worker 的任务文件，派发给对应的 Worker。Worker 会在自己的 Worker 圈 Tab 里独立工作。
 
 ### 第五步：收割 Worker 结果
 当所有 Worker 完成后，用 harvest.sh 收割他们的结果（但不关闭 pane，让他们保留在 Tab 内待审）。

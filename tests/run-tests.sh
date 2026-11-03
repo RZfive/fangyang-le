@@ -48,6 +48,14 @@
 #       labels, tab labels and manifest filenames stay valid UTF-8
 #   T33 Manager task files are named after DBZ role slugs and match
 #       .manager-map, the manifest and the display-name map one to one
+#   T33 Manager task files are named after DBZ role slugs and all managers land
+#       in ONE explicit-label HQ tab with a single shared manifest (no -workers
+#       suffix); the manager task sheet launches workers in their own tab with
+#       an absolute --cwd and never --in-tab / --cwd "."
+#   T34 fanout rejects --dbz-tier worker when --dbz-root equals --dbz-owner (the
+#       “18号·18号的界王拳” double-write guard) with exit 2 before any agent start
+#   T35 worker-flock manifests carry the -workers suffix; manager manifests don't
+#   T36 an explicit --label beats the dbz parent-chain auto label
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -879,27 +887,90 @@ T33_TASK_FILE="$(ls -1 "$T33_TASK_DIR"/*-task.md 2>/dev/null | head -n 1)"
 assert_contains "manager task tells workers to use worker tier" "$T33_TASK_FILE" "--dbz-tier worker"
 assert_contains "manager task passes its own display name as owner" "$T33_TASK_FILE" "--dbz-owner "
 assert_contains "manager task cites the roster script" "$T33_TASK_FILE" "dbz-roster.sh"
+# 断言只约束 bash 命令块，不影响正文里的教学文字（如「不传 --in-tab」的说明）。
+T33_CODE_BLOCK="$(awk '/^```bash/{f=1;next} /^```/{f=0} f' "$T33_TASK_FILE")"
+if printf '%s\n' "$T33_CODE_BLOCK" | grep -qF -- '--in-tab'; then
+  fail "manager task stops nesting workers in its own tab"
+else
+  pass "manager task stops nesting workers in its own tab"
+fi
+T33_REL_CWD="$(printf '%s\n' "$T33_CODE_BLOCK" | grep -E -- '--cwd +"' | grep -vE -- '--cwd +"/' || true)"
+[ -z "$T33_REL_CWD" ] && pass "manager task stops using a relative cwd" \
+  || fail "relative --cwd leaked into fanout call: $T33_REL_CWD"
 assert_contains "output names managers as 二线战士" "$TEST_DIR/t33-out.txt" "二线战士"
+assert_contains "output announces the HQ tab" "$TEST_DIR/t33-out.txt" "指挥部"
 T33_MANIFESTS="$(find "$WS33/.fangyang" -name '*-agents.tsv' -print | sort)"
 T33_MANIFEST_COUNT="$(printf '%s\n' "$T33_MANIFESTS" | grep -c . || true)"
-[ "${T33_MANIFEST_COUNT:-0}" -eq 2 ] && pass "one independent manifest per manager tab" \
-  || fail "found ${T33_MANIFEST_COUNT:-0} manager manifests, expected 2"
-T33_MAP_TOTAL=0
-if [ "${T33_MANIFEST_COUNT:-0}" -eq 2 ]; then
-  while IFS= read -r manifest; do
-    [ -n "$manifest" ] || continue
-    map_file="${manifest}.dbz-names"
-    map_lines="$(wc -l < "$map_file" 2>/dev/null | tr -d ' ' || echo 0)"
-    if [ "${map_lines:-0}" -eq 1 ]; then
-      T33_MAP_TOTAL=$((T33_MAP_TOTAL + 1))
-    else
-      fail "${map_file} has ${map_lines:-0} entries, expected 1 for its manager"
-    fi
-  done <<< "$T33_MANIFESTS"
+# 新布局：全部 Manager 并列同一个指挥部 Tab，一次 fanout 只产出一份 manifest
+# （tier=manager 不带 -workers 后缀）；「每 Manager 一份 manifest」的旧断言废除。
+[ "${T33_MANIFEST_COUNT:-0}" -eq 1 ] && pass "managers share one HQ manifest" \
+  || fail "found ${T33_MANIFEST_COUNT:-0} manager manifests, expected 1"
+assert_contains "HQ tab is created with the explicit label" "$LOG" "界王拳指挥部"
+T33_HQ_MANIFEST="$(printf '%s\n' "$T33_MANIFESTS" | head -n 1)"
+if [ "${T33_MANIFEST_COUNT:-0}" -eq 1 ]; then
+  T33_HQ_AGENTS="$(awk -F '\t' '$1 != "" && $1 != "name" && $1 !~ /^#/ { n++ } END { print n + 0 }' "$T33_HQ_MANIFEST")"
+  [ "${T33_HQ_AGENTS:-0}" -eq 2 ] && pass "HQ manifest lists both managers" \
+    || fail "HQ manifest lists ${T33_HQ_AGENTS:-0} agents, expected 2"
+  assert_contains "HQ manifest records manager tier" "$T33_HQ_MANIFEST" "#dbz_tier=manager"
+  T33_HQ_MAP="${T33_HQ_MANIFEST}.dbz-names"
+  T33_MAP_LINES="$(wc -l < "$T33_HQ_MAP" 2>/dev/null | tr -d ' ' || echo 0)"
+  [ "${T33_MAP_LINES:-0}" -eq 2 ] && pass "HQ dbz-names maps both managers" \
+    || fail "HQ dbz-names has ${T33_MAP_LINES:-0} entries, expected 2"
+  case "$T33_HQ_MANIFEST" in
+    *-workers-agents.tsv) fail "manager manifest must not carry the -workers suffix" ;;
+    *) pass "manager manifest has no -workers suffix" ;;
+  esac
 fi
-[ "$T33_MAP_TOTAL" -eq 2 ] && pass "each manager manifest has its own dbz-names mapping" \
-  || fail "only ${T33_MAP_TOTAL}/2 manager mappings are isolated"
 
+
+echo "== T34: worker 圈 root==owner 防呆（防「18号·18号的界王拳」）=="
+mkdir -p "$TEST_DIR/repo34"
+: > "$LOG"
+if bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo34" --count 1 \
+  --owner 克林 --work 修炼 --dbz-tier worker --dbz-owner 克林 \
+  --dbz-parent 克林 --dbz-root 克林 --tasks dende \
+  > "$TEST_DIR/t34-out.txt" 2>&1; then
+  fail "worker tier with root == owner should fail"
+else
+  rc=$?
+  [ "$rc" -eq 2 ] && pass "root == owner exits 2" || fail "root == owner exited $rc, expected 2"
+fi
+assert_contains "explains the root guard" "$TEST_DIR/t34-out.txt" "distinct from --dbz-owner"
+assert_not_contains "no agent started before the guard" "$LOG" "agent start"
+
+echo "== T35: worker 圈 manifest 固定 -workers 后缀，manager 圈不带 =="
+mkdir -p "$TEST_DIR/repo35"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo35" --count 2 \
+  --owner 克林 --work 修炼 --dbz-tier worker --dbz-owner 克林 \
+  --dbz-parent 克林 --dbz-root 孙悟空 --tasks dende,puar \
+  > "$TEST_DIR/t35-out.txt" 2>&1
+T35_WORKER_MANIFEST="$(find "$TEST_DIR/repo35/.fangyang" -name '*-agents.tsv' | head -n 1)"
+case "$T35_WORKER_MANIFEST" in
+  *-workers-agents.tsv) pass "worker flock manifest carries -workers suffix" ;;
+  *) fail "worker manifest missing -workers suffix: $T35_WORKER_MANIFEST" ;;
+esac
+mkdir -p "$TEST_DIR/repo35b"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo35b" --count 2 \
+  --owner 孙悟空 --work 指挥部 --dbz-tier manager --dbz-owner 孙悟空 \
+  --dbz-parent 孙悟空 --dbz-root 孙悟空 --tasks krillin,tien \
+  > "$TEST_DIR/t35b-out.txt" 2>&1
+T35_MANAGER_MANIFEST="$(find "$TEST_DIR/repo35b/.fangyang" -name '*-agents.tsv' | head -n 1)"
+case "$T35_MANAGER_MANIFEST" in
+  *-workers-agents.tsv) fail "manager manifest must not carry -workers suffix" ;;
+  *) pass "manager manifest keeps the plain stem" ;;
+esac
+
+echo "== T36: 显式 --label 优先于 dbz 父子链自动标签 =="
+mkdir -p "$TEST_DIR/repo36"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo36" --count 1 \
+  --label "孙悟空的界王拳指挥部 · 试点" --work 指挥部 \
+  --dbz-tier manager --dbz-owner 孙悟空 --dbz-parent 孙悟空 \
+  --dbz-root 孙悟空 --tasks tien > "$TEST_DIR/t36-out.txt" 2>&1
+assert_contains "explicit label wins" "$LOG" "孙悟空的界王拳指挥部 · 试点"
+assert_not_contains "auto dbz chain label not applied" "$LOG" "孙悟空·孙悟空的界王拳"
 
 rm -f "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
 echo

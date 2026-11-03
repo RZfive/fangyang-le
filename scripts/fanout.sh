@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COUNT=4
 KIND=auto
 LABEL=""
+LABEL_EXPLICIT=0
 CWD="$PWD"
 PREFIX="worker"
 OWNER=""
@@ -36,7 +37,9 @@ Options:
   --label LABEL    Tab label (default: "<owner>的羊圈 · <work>"); the controller's
                    own tab is renamed to "<owner> · <work>" to pair with it
                    (the original label is recorded in the manifest and restored
-                   by harvest --close-tab)
+                   by harvest --close-tab). Under --dbz-tier an explicit
+                   --label wins over the auto parent-chain label (use this to
+                   put every Manager in one shared HQ tab)
   --owner NAME     Controller name (default: auto — a random western cowboy
                    name like 夜枭/响尾蛇/孤星客, unique in this workspace; a
                    name already on this tab is reused). The pen is named
@@ -70,6 +73,8 @@ Options:
   --dbz-parent NAME
                    界王拳直接上级角色 slug（Worker 名称会带此前缀）。
   --dbz-root NAME  界王拳一线主角 slug，用于 workspace/Tab/manifest 追溯。
+                   worker tier 必传，且不得等于 --dbz-owner（所属 Manager），
+                   否则 exit 2（防「18号·18号的界王拳」双写标签）。
 EOF
 }
 
@@ -77,7 +82,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --count) COUNT="$2"; shift 2 ;;
     --kind) KIND="$2"; shift 2 ;;
-    --label) LABEL="$2"; shift 2 ;;
+    --label) LABEL="$2"; LABEL_EXPLICIT=1; shift 2 ;;
     --owner) OWNER="$2"; shift 2 ;;
     --work) WORK="$2"; shift 2 ;;
     --cwd) CWD="$2"; shift 2 ;;
@@ -138,6 +143,14 @@ if [[ -n "$DBZ_TIER" ]]; then
     fi
   else
     DBZ_ROOT_SLUG="$DBZ_OWNER_SLUG"
+  fi
+  # 界王拳 Worker 层的一线 root 永远不等于所属 Manager：漏传 --dbz-root（回退
+  # 成 owner 自身）或把 Manager 自己传成 root，都会生成「18号·18号的界王拳」
+  # 这类双写标签与错误追溯链，直接拒绝而不是静默产出错误命名。
+  if [[ "$DBZ_TIER" == "worker" && "$DBZ_ROOT_SLUG" == "$DBZ_OWNER_SLUG" ]]; then
+    echo "--dbz-tier worker requires --dbz-root <一线主角 slug>, distinct from --dbz-owner (the Manager)." >&2
+    echo "got root == owner ('$DBZ_OWNER'); pass e.g. --dbz-root goku (孙悟空)." >&2
+    exit 2
   fi
   if [[ -n "$DBZ_PARENT" ]]; then
     if ! DBZ_PARENT_SLUG="$(dbz_normalize_slug "$DBZ_PARENT")"; then
@@ -414,13 +427,10 @@ except Exception:
   fi
 fi
 LABEL="${LABEL:-${OWNER}的羊圈 · ${WORK}}"
-if [[ -n "$DBZ_TIER" ]]; then
+if [[ -n "$DBZ_TIER" && "$LABEL_EXPLICIT" == "0" ]]; then
   # 界王拳 Tab 标签显式写出一线根角色与当前 Manager/父级角色。
-  if [[ "$DBZ_TIER" == "manager" ]]; then
-    LABEL="${DBZ_ROOT_DISPLAY}·${DBZ_PARENT_DISPLAY}的界王拳 · ${WORK}"
-  else
-    LABEL="${DBZ_ROOT_DISPLAY}·${DBZ_PARENT_DISPLAY}的界王拳 · ${WORK}"
-  fi
+  # 显式 --label 优先：所有 Manager 并列的「指挥部」Tab 等自定义布局由调用方命名。
+  LABEL="${DBZ_ROOT_DISPLAY}·${DBZ_PARENT_DISPLAY}的界王拳 · ${WORK}"
 fi
 if (( IN_TAB == 1 )); then
   # 普通放羊保留原有“owner · work”；界王拳 Worker 保留父子链标签。
@@ -429,7 +439,14 @@ if (( IN_TAB == 1 )); then
   fi
 fi
 
-MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-agents.tsv"
+# Manager 圈与 Worker 圈可能共用同一个 Tab 标签（Worker fanout 照抄 Manager 层
+# work 名时）。manifest 文件名按 tier 分流：worker 圈固定带 -workers 后缀，
+# 不再依赖「同名加 tab id」的去重兜底，领导圈与 Worker 圈的清单一眼可辨。
+MANIFEST_STEM="${LABEL// /_}"
+if [[ "$DBZ_TIER" == "worker" ]]; then
+  MANIFEST_STEM="${MANIFEST_STEM}-workers"
+fi
+MANIFEST="$TASKS_DIR/herdr-${MANIFEST_STEM}-agents.tsv"
 FOCUS_FLAG="--no-focus"
 if (( FOCUS == 1 )); then FOCUS_FLAG="--focus"; fi
 
@@ -455,7 +472,7 @@ fi
 # owner+work combination already produced a manifest in this tasks dir, the
 # new fold gets a "-<tab_id>" suffix instead of clobbering the old file.
 if [[ -e "$MANIFEST" ]]; then
-  MANIFEST="$TASKS_DIR/herdr-${LABEL// /_}-${TAB_ID}-agents.tsv"
+  MANIFEST="$TASKS_DIR/herdr-${MANIFEST_STEM}-${TAB_ID}-agents.tsv"
   echo "note: manifest for '${LABEL}' already exists; this fold writes $MANIFEST"
 fi
 

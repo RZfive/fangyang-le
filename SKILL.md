@@ -1,6 +1,6 @@
 ---
 name: fangyang-le
-description: 放羊了 —— 用 herdr 并行放养多个 coding agent（Codex / Claude Code / OpenCode / Gemini / Cursor / Copilot / Qwen / Kimi / Droid 等）。当用户要求“多开 agent / 并发做 / 分工 / 放羊 / 快速并行推进”，或任务可以按文件或模块拆成多个独立 workstream 时使用；超大任务（10+ 工作单元）用“界王拳模式”——主控 → 2–6 个 Manager（各占一个 tab）→ 每个 Manager 再用 fanout 开 2–6 个 Worker（最多 36 个并行）。主控负责拆任务、开 pane、派发、处理权限、收割结果、统一验证和 checkpoint；agent 不提交代码。
+description: 放羊了 —— 用 herdr 并行放养多个 coding agent（Codex / Claude Code / OpenCode / Gemini / Cursor / Copilot / Qwen / Kimi / Droid 等）。当用户要求“多开 agent / 并发做 / 分工 / 放羊 / 快速并行推进”，或任务可以按文件或模块拆成多个独立 workstream 时使用；超大任务（10+ 工作单元）用“界王拳模式”（主路径为主控手工三层编排）——主控 → 全部 Manager 并列一个指挥部 tab → 每个 Manager 再用 fanout 开独立 Worker 圈 tab（各 2–6 个，最多 36 个并行）。主控负责拆任务、开 pane、派发、处理权限、收割结果、统一验证和 checkpoint；agent 不提交代码。
 ---
 
 # 放羊了
@@ -76,11 +76,11 @@ rm -rf /tmp/fangyang-le
 
 ```text
 🥇 一线主角（孙悟空/贝吉塔…）主控
-  └─ 🥈 二线战士（克林/天津饭/乌龙…）Manager ×2–6，每人占一个 tab
-       └─ 🥉 三线小兵（龟仙人弟子/红丝带兵…）Worker ×2–6，在 Manager 的 tab 里排网格
+  ├─ 🥈 指挥部 tab：全部 Manager（克林/天津饭/乌龙…）×2–6 并列网格
+  │      └─ 每个 Manager 一个 🥉 Worker 圈 tab（龟仙人弟子/红丝带兵…）×2–6 排网格
 ```
 
-一句话：**主控 → Manager 用 fanout 开圈 → Manager 在自己的 tab 里再用 fanout 开 Worker**，最多 1 + 6 + 36 个 agent 同时跑。
+一句话：**主控 → 一次 fanout 把 Manager 们并列进指挥部 tab → 每个 Manager 再用自己的 fanout 开独立 Worker 圈 tab**，领导和 worker 在 workspace 里一眼可分，最多 1 + 6 + 36 个 agent 同时跑。
 
 ### 什么时候值得开
 
@@ -98,7 +98,25 @@ rm -rf /tmp/fangyang-le
 
 **第一步：先和用户聊透，把结论写成 SPEC**（不要跳过）。主 Agent 用 `SPEC_QUESTIONS.md` 里的问题清单逐条问清楚：最终交付物、现状与起点、可改/禁改边界、验收命令、约束与优先级。聊完把答案写成一份 markdown（比如 `SPEC.md`），用 `--spec` 传进去——脚本会把它复制成任务目录里的 `SPEC.md`，作为**唯一事实来源**下发给每个 Manager。
 
-**第二步：一条命令开跑**：
+**第二步（主路径）：主 Agent 手工编排**。`kaio-ken-orchestrate.sh` 的自动分解器是**通用章节模板**（`lib/decompose.sh` 按任务类型套模板），对具体领域/代码库的分解经常不贴合——实际跑界王拳的**主路径是主控按本 skill 纪律手工执行同等步骤**，每步落盘留痕：
+
+1. 建专属 workspace（不碰主控原有工作区）：
+   `herdr workspace create --label "<主控角色名>的界王拳 · <工作名>" --cwd "$PWD" --no-focus`
+2. 建任务目录 `.fangyang/kaio-ken-<ts>/`，把 SPEC 固化成 `SPEC.md`，决策写入 `.decisions.log`
+3. 领角色：`dbz-roster.sh --count N --tier manager|worker --used-from "$TASK_DIR"`
+4. **一次 fanout 把全部 Manager 并列进「指挥部」tab**（网格布局）：
+   ```bash
+   bash "$SKILL_DIR/scripts/fanout.sh" --count 3 --kind auto \
+     --label "<主控角色名>的界王拳指挥部 · <工作名>" \
+     --dbz-tier manager --dbz-owner <主控slug> --dbz-parent <主控slug> \
+     --dbz-root <主控slug> --tasks <manager1,manager2,manager3> \
+     --workspace "$HERDR_WORKSPACE_ID" --cwd "$PWD" \
+     --tasks-dir "$TASK_DIR" --no-controller-rename
+   ```
+5. 照 `templates/manager-task.md` 给每个 Manager 写任务书（Worker fanout 命令已内嵌：独立 Worker 圈 tab + 绝对 cwd），`herdr agent prompt` 逐个派发
+6. 监控 → 收割 → 质量门（报告覆盖率 + `--verify`）→ 不达标按 Goal 纪律写缺口任务书返工，决策全留 `.decisions.log`
+
+**第二步（备选）：脚本一键无人值守**。需求天然能按通用模板分解（如标准全栈「前端/后端/DB/文档」四模块）、且想无人值守跑时用 orchestrator：
 
 ```bash
 "$SKILL_DIR/scripts/kaio-ken-orchestrate.sh" \
@@ -111,7 +129,7 @@ rm -rf /tmp/fangyang-le
   --cwd "$PWD"
 ```
 
-脚本会：建**专属 workspace**（`界王拳 · <任务名>`，不碰主控原有工作区）→ 固化 SPEC → 分解为 Manager 任务 → 用 `fanout.sh` 每个 Manager 开一个 tab → 派发任务 → Loop 监控 → 收割 + 跑 `--verify` → 质量门不通过则自动返工。
+脚本会：建**专属 workspace**（`界王拳 · <任务名>`，不碰主控原有工作区）→ 固化 SPEC → 按通用模板分解 Manager 任务 → 一次 fanout 把全部 Manager 并列进指挥部 tab → 派发任务 → Loop 监控 → 收割 + 跑 `--verify` → 质量门不通过则自动返工。分解贴合度存疑时优先手工编排。
 
 常用参数：
 
@@ -167,7 +185,7 @@ flowchart TD
 
 ### 三层下的铁律补充
 
-- **每个 Manager 一个 tab**：Manager 是那个 tab 的主控 pane，Worker 在它右侧网格；用户一眼能看清「谁在带哪群人」。
+- **指挥部 + Worker 圈分 tab**：全部 Manager 并列在同一个「指挥部」tab 网格里；每个 Manager 的 Worker 圈是自己的独立 tab——领导和 worker 一眼可分，指挥部 tab 永远只有 Manager。
 - **workspace 隔离**：界王拳的所有 tab 都在它自己的 workspace 里，主控不跟 Manager 抢 pane。
 - **Manager 必须用 fanout.sh 起 Worker**，不要用 spawn_subagents 之类的裸调用——否则 Worker 没有 pane、用户看不见、也没法用 `agent read` 收割。
 - **Manager 内的分片同样遵守文件不重叠**：热文件只在主控或单个 Manager 手里；跨 Manager 的接口契约先写进任务文件再开工。
@@ -666,12 +684,12 @@ git commit -m "<type>(<scope>): <summary>"
 
 - `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent；同步把主控 tab 改名 `<owner> · <work>`；在 herdr pane 外执行时自动 bootstrap（装 herdr、起 headless server、建专属牧场 workspace），`--no-bootstrap` 可关闭
 - `scripts/ensure-herdr.sh`：确保 herdr CLI 与 headless `herdr server` 可用（已有则复用、缺失则安装/拉起），幂等；供 fanout.sh 外部模式调用，也可单独执行
-- `scripts/kaio-ken-orchestrate.sh`：界王拳三层编排入口——建专属 workspace、固化 SPEC（`--spec` 或推断草稿）、分解 Manager 任务、逐个 fanout 开圈、派发、Loop 监控、收割 + `--verify` 质量门、Goal 模式自动返工，最后聚合报告
+- `scripts/kaio-ken-orchestrate.sh`：界王拳三层编排**自动化备选**（主路径是主控手工编排，见「怎么开」）——建专属 workspace、固化 SPEC（`--spec` 或推断草稿）、按通用模板分解 Manager 任务、一次 fanout 把全部 Manager 并列进指挥部 tab、派发、Loop 监控、收割 + `--verify` 质量门、Goal 模式自动返工，最后聚合报告
 - `scripts/dbz-roster.sh`：按一线/二线/三线领不重复的七龙珠角色 slug（`--count --tier --used-from --exclude --explain`）
 - `lib/spec.sh`：需求规格推断与提问清单（`SPEC_QUESTIONS.md`）、Goal 质量门判据
 - `lib/decompose.sh`：按任务类型（code/report/design/mixed）给出 Manager 分片建议
 - `lib/dbz-characters.sh`：三线七龙珠角色名池（主控/Manager/Worker 命名，含去重）
-- `templates/manager-task.md`：Manager 任务模板（七个步骤，重点说明「在自己的 tab 里用 fanout.sh 起 Worker」）
+- `templates/manager-task.md`：Manager 任务模板（七个步骤，Worker 用 fanout.sh 开**独立 Worker 圈 tab**，`--cwd` 用绝对路径）
 - `templates/worker-task.md`：Worker 任务模板（write scope / 验收 / 越界自查）
 - `tests/run-tests.sh`：离线 stub 测试（伪 herdr CLI），覆盖 fanout/harvest 的主控 tab 配对行为
 - `install.sh`：安装到 `~/.agents/skills/fangyang-le` 并链接到 agent skill 目录

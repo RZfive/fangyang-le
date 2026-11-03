@@ -443,49 +443,55 @@ if ! confirm_decision "启动 $ACTUAL_MANAGER_COUNT 个 Manager（每人不超 $
 fi
 
 
-# 每个 Manager 单独建一个 Tab。这样 UI 上天然形成：主 Agent workspace → Manager Tab → Worker panes。
-# 同一个 workspace 仍被所有 Manager 共享，但 manifest 按 Manager 隔离，后续派发/监控
-# 只读取各自的真实 agent 名，不会把多个 Manager 混在一个 Tab 里。
-MANAGER_MANIFESTS=()
-MANAGER_DBZ_MAPS=()
-MANAGER_ACTUAL_NAMES=()
-for ((i = 0; i < ACTUAL_MANAGER_COUNT; i++)); do
-  manager_slug="${MANAGER_SLUGS[$i]}"
-  manager_work="${MANAGER_TASK_WORKS[$i]}"
-  MANAGER_FANOUT_OUTPUT="$(bash "$SKILL_DIR/scripts/fanout.sh" \
-    --count 1 \
-    --kind auto \
-    --work "$manager_work" \
-    --dbz-tier manager \
-    --dbz-owner "$manager_slug" \
-    --dbz-parent "$manager_slug" \
-    --dbz-root "$MAIN_AGENT_SLUG" \
-    --tasks "$manager_slug" \
-    --workspace "$WORKSPACE_ID" \
-    --cwd "$CWD" \
-    --tasks-dir "$TASK_DIR" \
-    --no-controller-rename 2>&1)" || {
-    printf '%s\n' "$MANAGER_FANOUT_OUTPUT" >&2
-    echo "Error: Manager $manager_slug 的 Tab 创建失败" >&2
-    exit 1
-  }
-  printf '%s\n' "$MANAGER_FANOUT_OUTPUT"
+# 所有 Manager 并列在同一个「指挥部」Tab 里网格布局：workspace 结构变成
+# 指挥部 Tab（全部 Manager 并列）→ 每 Manager 一个独立 Worker 圈 Tab，
+# 领导和 Worker 在 tab 列表里一眼可分。一次 fanout 在新 Tab 里铺 N 格网格
+# 并逐格启动 Manager；manifest 记录同一 Tab 下的全部 Manager（tier=manager，
+# 不带 -workers 后缀，与 Worker 圈清单天然分流），后续派发/监控按真实
+# agent 名逐个进行。
+MANAGER_CSV="$(IFS=,; printf '%s' "${MANAGER_PLANNED[*]}")"
+HQ_LABEL="${MAIN_AGENT_NAME}的界王拳指挥部 · ${WORK_NAME}"
+MANAGER_FANOUT_OUTPUT="$(bash "$SKILL_DIR/scripts/fanout.sh" \
+  --count "$ACTUAL_MANAGER_COUNT" \
+  --kind auto \
+  --label "$HQ_LABEL" \
+  --work "${WORK_NAME} 指挥部" \
+  --dbz-tier manager \
+  --dbz-owner "$MAIN_AGENT_SLUG" \
+  --dbz-parent "$MAIN_AGENT_SLUG" \
+  --dbz-root "$MAIN_AGENT_SLUG" \
+  --tasks "$MANAGER_CSV" \
+  --workspace "$WORKSPACE_ID" \
+  --cwd "$CWD" \
+  --tasks-dir "$TASK_DIR" \
+  --no-controller-rename 2>&1)" || {
+  printf '%s\n' "$MANAGER_FANOUT_OUTPUT" >&2
+  echo "Error: 指挥部 Tab（$HQ_LABEL）创建失败" >&2
+  exit 1
+}
+printf '%s\n' "$MANAGER_FANOUT_OUTPUT"
 
-  manager_manifest="$(printf '%s\n' "$MANAGER_FANOUT_OUTPUT" | sed -n 's/^manifest:[[:space:]]*//p' | tail -n 1)"
-  if [[ -z "$manager_manifest" || ! -f "$manager_manifest" ]]; then
-    echo "Error: fanout 未返回 Manager $manager_slug 的有效 manifest" >&2
-    exit 1
-  fi
-  manager_actual_name="$(awk -F '\t' '$1 != "" && $1 != "name" && $1 !~ /^#/ { print $1; exit }' "$manager_manifest")"
-  if [[ -z "$manager_actual_name" ]]; then
-    echo "Error: Manager manifest 没有已启动的 agent: $manager_manifest" >&2
-    exit 1
-  fi
-  MANAGER_MANIFESTS+=("$manager_manifest")
-  MANAGER_DBZ_MAPS+=("${manager_manifest}.dbz-names")
-  MANAGER_ACTUAL_NAMES+=("$manager_actual_name")
-  echo "✓ Manager $manager_actual_name 已建立独立 Tab，manifest: $manager_manifest"
-done
+manager_manifest="$(printf '%s\n' "$MANAGER_FANOUT_OUTPUT" | sed -n 's/^manifest:[[:space:]]*//p' | tail -n 1)"
+if [[ -z "$manager_manifest" || ! -f "$manager_manifest" ]]; then
+  echo "Error: fanout 未返回指挥部 manifest" >&2
+  exit 1
+fi
+MANAGER_ACTUAL_NAMES=()
+while IFS=$'\t' read -r m_name _m_rest; do
+  [[ -z "$m_name" || "$m_name" == "name" ]] && continue
+  [[ "$m_name" == \#* ]] && continue
+  MANAGER_ACTUAL_NAMES+=("$m_name")
+done < "$manager_manifest"
+if (( ${#MANAGER_ACTUAL_NAMES[@]} == 0 )); then
+  echo "Error: 指挥部 manifest 没有已启动的 agent: $manager_manifest" >&2
+  exit 1
+fi
+if (( ${#MANAGER_ACTUAL_NAMES[@]} != ACTUAL_MANAGER_COUNT )); then
+  echo "Error: 指挥部启动的 Manager 数量不符（${#MANAGER_ACTUAL_NAMES[@]}/$ACTUAL_MANAGER_COUNT）" >&2
+  exit 1
+fi
+MANAGER_DBZ_MAP="${manager_manifest}.dbz-names"
+echo "✓ ${#MANAGER_ACTUAL_NAMES[@]} 个 Manager 已并列进入指挥部 Tab（$HQ_LABEL），manifest: $manager_manifest"
 
 # ============================================================================
 # 阶段 5：派发任务给 Manager
@@ -512,7 +518,7 @@ for ((i = 0; i < MANIFEST_COUNT; i++)); do
   manager_slug="${MANAGER_ACTUAL_NAMES[$i]}"
   planned_slug="${MANAGER_SLUGS[$i]}"
   task_file="$TASK_DIR/${planned_slug}-task.md"
-  manager_map="${MANAGER_DBZ_MAPS[$i]}"
+  manager_map="$MANAGER_DBZ_MAP"
   manager_name="$(dbz_manifest_display_name "$manager_map" "$manager_slug")"
 
   if [[ ! -f "$task_file" ]]; then
@@ -530,7 +536,7 @@ for ((i = 0; i < MANIFEST_COUNT; i++)); do
 
   echo "→ 派发任务给 $manager_name ($manager_slug) · 模块 ${MODULE_SLUGS[$i]} ..."
   herdr agent prompt "$manager_slug" \
-    "Read $task_file and follow it step by step. You are a Manager, not a Worker. Your job is to decompose your task scope, create Worker task files, launch Workers using fanout.sh in YOUR tab, harvest results, verify quality, and write a report to $TASK_DIR/${manager_slug}-report.md. Do not commit."
+    "Read $task_file and follow it step by step. You are a Manager, not a Worker. Your job is to decompose your task scope, create Worker task files, launch Workers using fanout.sh (each Manager's Worker flock opens its own tab; the HQ tab stays Managers-only), harvest results, verify quality, and write a report to $TASK_DIR/${manager_slug}-report.md. Do not commit."
 done
 
 # 监控与收割也要用真实 agent 名。
@@ -791,7 +797,7 @@ fi
   echo
   echo "## 下一步建议"
   echo
-  echo "1. 看羊圈 workspace ${WORKSPACE_ID} 里各 Manager 的 tab"
+  echo "1. 看羊圈 workspace ${WORKSPACE_ID}：指挥部 Tab 里是全部 Manager，各 Worker 圈 Tab 按经理分列"
   echo "2. 复核本报告里的 git diff 与验收输出"
   echo "3. 确认无误后再由主 Agent 决定是否 commit"
   echo
