@@ -54,7 +54,8 @@ bash {{SKILL_DIR}}/scripts/fanout.sh \
   --workspace "$HERDR_WORKSPACE_ID" \
   --cwd "{{CWD}}" \
   --tasks-dir {{TASK_DIR}} \
-  --tasks "$WORKER_CSV"
+  --tasks "$WORKER_CSV" \
+  --no-controller-rename
 ```
 
 `--tasks-dir` 用绝对路径 `{{TASK_DIR}}`，这样无论 Manager 从哪个目录执行，
@@ -66,6 +67,9 @@ bash {{SKILL_DIR}}/scripts/fanout.sh \
   从任务目录里跑 `--cwd "."` 会把 Worker 全部起错目录（相对路径失效）
 - 不传 `--in-tab`：Worker 圈会打开自己的新 Tab（网格并列），指挥部 Tab 保持
   只有 Manager，workspace 里领导和 Worker 一眼可分
+- 必须传 `--no-controller-rename`：你执行 fanout 时所在的 Tab 是**全部 Manager
+  共享的指挥部 Tab**，它的标签属于大家——绝不能被你的 Worker fanout 改名成
+  「<你> · Worker圈」（fanout 对含「指挥部」的 Tab 也会兜底拒改名，但别依赖兜底）
 - `--dbz-root` 必须传一线主角 `{{MAIN_AGENT_SLUG}}`：漏传或传成你自己会被
   fanout 直接拒绝（防「18号·18号的界王拳」这类双写标签）
 

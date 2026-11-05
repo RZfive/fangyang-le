@@ -66,7 +66,11 @@ Options:
                    closes only the worker panes, never the Manager's tab.
   --focus          Focus the new tab after creation
   --no-controller-rename
-                   Do not rename the caller's tab (界王拳为每个 Manager 单独开 Tab 时使用)
+                   Do not rename the caller's tab. kaio-ken Managers must pass
+                   this: they fan out from the shared 指挥部 HQ tab, whose label
+                   belongs to everyone and must never become "<owner> · <work>".
+                   (fanout additionally refuses to rename any caller tab whose
+                   label contains 指挥部, so a forgotten flag stays harmless)
   --dbz-tier TIER  界王拳专用命名：manager 用二线角色、worker 用三线角色。
                    仅界王拳传此参数；普通放羊继续使用西部牛仔命名。
   --dbz-owner NAME 界王拳当前角色名：Manager 传一线主角，Worker 传所属 Manager。
@@ -443,6 +447,14 @@ fi
 # work 名时）。manifest 文件名按 tier 分流：worker 圈固定带 -workers 后缀，
 # 不再依赖「同名加 tab id」的去重兜底，领导圈与 Worker 圈的清单一眼可辨。
 MANIFEST_STEM="${LABEL// /_}"
+# Path safety: LABEL derives from free text (e.g. a kaio-ken work name truncated
+# from the user request, which can begin with "docs/…"). An embedded separator
+# would turn the manifest path into a nonexistent subdirectory and the redirect
+# below would die with ENOENT, killing the whole fold — so the stem is forced
+# back to a single filename component.
+# (Keep the bracket as [\/...]: under bash 3.2 inside double quotes this form
+# works, while [\\/...] silently substitutes nothing.)
+MANIFEST_STEM="${MANIFEST_STEM//[\/:?%*|<>]/_}"
 if [[ "$DBZ_TIER" == "worker" ]]; then
   MANIFEST_STEM="${MANIFEST_STEM}-workers"
 fi
@@ -480,17 +492,31 @@ fi
 # with the pen; the original label is stored in the manifest as
 # "#controller_tab_*" metadata so harvest --close-tab can restore it.
 # In-tab mode skips this: the caller's tab IS the pen.
+# Shared-HQ guard: in kaio-ken three-tier mode ALL Managers share one 指挥部
+# tab, and each Manager's Worker-circle fanout runs with that shared tab as its
+# caller tab. Renaming it to "<owner> · <work>" would clobber the HQ label for
+# everyone (first Manager wins, the 指挥部 marker is lost). A caller tab whose
+# label contains 指挥部 is therefore never renamed; Manager task sheets also
+# pass --no-controller-rename explicitly, and this guard catches improvised
+# invocations that forget the flag.
 CTRL_RENAMED=0
 CTRL_TAB_META_ID=""
 CTRL_TAB_META_LABEL=""
 if (( IN_TAB == 0 )) && (( NO_CONTROLLER_RENAME == 0 )) && [[ -n "${HERDR_TAB_ID:-}" ]] && [[ -n "$CTRL_TAB_ORIG" ]]; then
-  if herdr tab rename "$HERDR_TAB_ID" "${OWNER} · ${WORK}" >/dev/null 2>&1; then
-    CTRL_RENAMED=1
-    CTRL_TAB_META_ID="#controller_tab_id=${HERDR_TAB_ID}"
-    CTRL_TAB_META_LABEL="#controller_tab_label=${CTRL_TAB_ORIG}"
-  else
-    echo "warn: fold opened, but could not rename controller tab ${HERDR_TAB_ID}" >&2
-  fi
+  case "$CTRL_TAB_ORIG" in
+    *指挥部*)
+      echo "note: caller tab '${CTRL_TAB_ORIG}' is a shared 指挥部 tab; controller rename skipped" >&2
+      ;;
+    *)
+      if herdr tab rename "$HERDR_TAB_ID" "${OWNER} · ${WORK}" >/dev/null 2>&1; then
+        CTRL_RENAMED=1
+        CTRL_TAB_META_ID="#controller_tab_id=${HERDR_TAB_ID}"
+        CTRL_TAB_META_LABEL="#controller_tab_label=${CTRL_TAB_ORIG}"
+      else
+        echo "warn: fold opened, but could not rename controller tab ${HERDR_TAB_ID}" >&2
+      fi
+      ;;
+  esac
 fi
 
 # Grid layout. Tab mode: the new tab's root pane is the first slot. In-tab mode:

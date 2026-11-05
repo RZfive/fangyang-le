@@ -130,7 +130,7 @@ AVAILABLE="$(printf '%s\n' "$CANDIDATES" | awk -v seed="$SEED" -v exclude="$EXCL
 ' | sort -n | cut -f2-)"
 
 if [[ -z "$AVAILABLE" ]]; then
-  echo "dbz-roster: $TIER 角色池已被占满（exclude=$EXCLUDE），请显式指定角色" >&2
+  echo "dbz-roster: ${TIER} 角色池已被占满（exclude=${EXCLUDE}），请显式指定角色" >&2
   exit 1
 fi
 

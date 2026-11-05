@@ -56,6 +56,15 @@
 #       “18号·18号的界王拳” double-write guard) with exit 2 before any agent start
 #   T35 worker-flock manifests carry the -workers suffix; manager manifests don't
 #   T36 an explicit --label beats the dbz parent-chain auto label
+#   T37 a label derived from free text containing "/" (kaio-ken work names are
+#       truncated from the request, which can begin with "docs/…") never leaks
+#       into the manifest path: the stem is sanitized to one filename component
+#   T38 fanout never renames a caller tab whose label contains 指挥部 (the
+#       shared kaio-ken HQ tab), and the manager task sheet pins
+#       --no-controller-rename so every Manager's worker fanout is explicit
+#   T39 no file under scripts/ or lib/ leaves $IDENT directly followed by a
+#       non-ASCII byte: bash 3.2 glues the continuation bytes into the variable
+#       name and dies with "<VAR><garbage>: unbound variable" under set -u
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -971,6 +980,81 @@ bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo36" --count 1 \
   --dbz-root 孙悟空 --tasks tien > "$TEST_DIR/t36-out.txt" 2>&1
 assert_contains "explicit label wins" "$LOG" "孙悟空的界王拳指挥部 · 试点"
 assert_not_contains "auto dbz chain label not applied" "$LOG" "孙悟空·孙悟空的界王拳"
+
+echo "== T37: 含 / 的标签不污染 manifest 路径 =="
+# 回归点：kaio-ken 工作名截自用户请求（可以以 "docs/…" 开头），标签照抄进
+# manifest 文件名后内嵌 / 会把路径变成不存在的子目录，set -e 下 printf
+# 重定向 ENOENT 直接杀死整个 fold。茎干必须收敛回单个文件名。
+mkdir -p "$TEST_DIR/repo37"
+: > "$LOG"
+if bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo37" --count 1 \
+     --owner 主控 --work 试点G --label "docs/billing-diff 框架对照" \
+     --tasks g1 > "$TEST_DIR/t37-out.txt" 2>&1; then
+  pass "fanout exits 0 with a slash in the label"
+else
+  fail "fanout failed on slash label"; cat "$TEST_DIR/t37-out.txt"
+fi
+T37_MANIFEST="$(find "$TEST_DIR/repo37/.fangyang" -name '*-agents.tsv' | head -n 1)"
+[ -n "$T37_MANIFEST" ] && pass "manifest created despite slash label" \
+  || fail "manifest missing for slash label"
+T37_BASE="$(basename "$T37_MANIFEST")"
+case "$T37_BASE" in
+  */*|*:*) fail "manifest filename still carries a path separator: $T37_BASE" ;;
+  *docs_billing-diff*) pass "manifest filename is one component, slash sanitized: $T37_BASE" ;;
+  *) fail "manifest stem missing the sanitized label: $T37_BASE" ;;
+esac
+
+echo "== T38: 共享指挥部 Tab 不被 Worker fanout 改名 =="
+# 回归点：界王拳三层模式下全部 Manager 共用一个指挥部 Tab；Manager 各自的
+# Worker fanout 若照常改名调用方 Tab，指挥部标签会被第一个 Manager 覆写成
+# 「<owner> · Worker圈」。fanout 对含「指挥部」的调用方 Tab 兜底拒改名，
+# Manager 任务书同时显式传 --no-controller-rename。
+mkdir -p "$TEST_DIR/repo38"
+printf '"孙悟空的界王拳指挥部 · 试点H"\n' > "$TEST_DIR/ctrl_label"
+: > "$LOG"
+bash "$REPO_DIR/scripts/fanout.sh" --cwd "$TEST_DIR/repo38" --count 1 \
+  --owner 克林 --work Worker圈 --dbz-tier worker --dbz-owner 克林 \
+  --dbz-parent 克林 --dbz-root 孙悟空 --tasks dende \
+  > "$TEST_DIR/t38-out.txt" 2>&1
+assert_not_contains "HQ tab not renamed"     "$LOG" "tab rename"
+assert_contains   "skip note printed"        "$TEST_DIR/t38-out.txt" "指挥部"
+T38_MANIFEST="$(find "$TEST_DIR/repo38/.fangyang" -name '*-agents.tsv' | head -n 1)"
+assert_not_contains "no controller metadata" "$T38_MANIFEST" "#controller_tab"
+printf '"1"\n' > "$TEST_DIR/ctrl_label"
+assert_contains   "manager sheet pins --no-controller-rename" \
+  "$REPO_DIR/templates/manager-task.md" "--no-controller-rename"
+
+echo "== T39: bash 3.2 多字节邻接扫描（\$IDENT 直接跟非 ASCII 字节）=="
+# 回归点：macOS /usr/bin/env bash = 3.2，双引号里 "$VAR（" 这种变量名紧贴
+# 多字节字符的写法会把后续字节粘进变量名，set -u 下报
+# 「TASK_TYPE…: unbound variable」杀死编排（2026-11-05 实发于 310 行）。
+# 统一改写成 "${VAR}（"；按字节扫描防止回归。
+if python3 - "$REPO_DIR" <<'PY'
+import glob, os, re, sys
+repo = sys.argv[1]
+pat = re.compile(rb'\$[A-Za-z_][A-Za-z0-9_]*[\x80-\xff]')
+bad = []
+paths = sorted(glob.glob(os.path.join(repo, 'scripts', '*.sh'))
+               + glob.glob(os.path.join(repo, 'lib', '*.sh')))
+for path in paths:
+    data = open(path, 'rb').read()
+    for m in pat.finditer(data):
+        lineno = data[:m.start()].count(b'\n') + 1
+        line = data.splitlines()[lineno - 1]
+        if line.lstrip().startswith(b'#'):
+            continue  # comment-only lines are not parsed by bash
+        bad.append('%s:%d: %s' % (os.path.relpath(path, repo), lineno,
+                                  line.decode('utf-8', 'replace').strip()))
+if bad:
+    print('raw $IDENT directly followed by a non-ASCII byte — brace it as ${IDENT}:')
+    print('\n'.join(bad))
+    sys.exit(1)
+PY
+then
+  pass "no raw \$IDENT adjacent to non-ASCII bytes under scripts/ lib/"
+else
+  fail "bash 3.2 multibyte adjacency regression found (see listing above)"
+fi
 
 rm -f "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
 echo

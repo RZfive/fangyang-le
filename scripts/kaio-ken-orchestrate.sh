@@ -195,7 +195,7 @@ record_decision() { # <标题> <结论>
 confirm_decision() { # <标题> <详情>；返回 0 继续，1 中止
   local title="$1" detail="${2:-}" answer=""
   if (( AUTO_MODE == 1 )); then
-    echo "  [auto] $title：自动继续"
+    echo "  [auto] ${title}：自动继续"
     record_decision "$title" "自动继续（--auto-mode 1）"
     return 0
   fi
@@ -209,7 +209,7 @@ confirm_decision() { # <标题> <详情>；返回 0 继续，1 中止
     esac
   fi
   if (( INTERACTIVE == 0 )); then
-    echo "  [auto-fallback] 没有可交互终端，无法确认「$title」，按继续处理" >&2
+    echo "  [auto-fallback] 没有可交互终端，无法确认「${title}」，按继续处理" >&2
     record_decision "$title" "自动继续（无 tty，降级）"
     return 0
   fi
@@ -275,8 +275,8 @@ if [[ -n "$SPEC_FILE" ]]; then
     echo "Error: 无法复制 --spec 文件到任务目录: $SPEC_FILE" >&2
     exit 1
   fi
-  echo "✓ 需求规格: 使用 --spec $SPEC_FILE（已复制到 $SPEC_PATH）"
-  record_decision "需求深挖" "使用 --spec 文件（$SPEC_FILE）"
+  echo "✓ 需求规格: 使用 --spec ${SPEC_FILE}（已复制到 ${SPEC_PATH}）"
+  record_decision "需求深挖" "使用 --spec 文件（${SPEC_FILE}）"
 else
   echo "  未传 --spec：按请求推断规格草稿，自动推断的维度会在报告里逐条标出"
   if ! kaio_build_spec "$REQUEST" "$CWD" "$TASK_TYPE" "$VERIFY_CMD" "" "$SPEC_PATH"; then
@@ -307,7 +307,7 @@ echo "$MANAGER_TASKS" | nl
 echo ""
 
 # 第一个关键决策点：分解结果就是整条流水线的骨架，改起来最贵。
-if ! confirm_decision "确认任务分解（$TASK_TYPE，$ACTUAL_MANAGER_COUNT 个 Manager）" \
+if ! confirm_decision "确认任务分解（${TASK_TYPE}，$ACTUAL_MANAGER_COUNT 个 Manager）" \
   "$(printf '需求: %s\n类型: %s\n上限: %s 个 Manager × %s 个 Worker\n\n%s\n' \
     "$REQUEST" "$TASK_TYPE" "$MAX_MANAGERS" "$MAX_WORKERS_PER_MANAGER" \
     "$(echo "$MANAGER_TASKS" | nl -ba)")"; then
@@ -466,7 +466,7 @@ MANAGER_FANOUT_OUTPUT="$(bash "$SKILL_DIR/scripts/fanout.sh" \
   --tasks-dir "$TASK_DIR" \
   --no-controller-rename 2>&1)" || {
   printf '%s\n' "$MANAGER_FANOUT_OUTPUT" >&2
-  echo "Error: 指挥部 Tab（$HQ_LABEL）创建失败" >&2
+  echo "Error: 指挥部 Tab（${HQ_LABEL}）创建失败" >&2
   exit 1
 }
 printf '%s\n' "$MANAGER_FANOUT_OUTPUT"
@@ -487,11 +487,11 @@ if (( ${#MANAGER_ACTUAL_NAMES[@]} == 0 )); then
   exit 1
 fi
 if (( ${#MANAGER_ACTUAL_NAMES[@]} != ACTUAL_MANAGER_COUNT )); then
-  echo "Error: 指挥部启动的 Manager 数量不符（${#MANAGER_ACTUAL_NAMES[@]}/$ACTUAL_MANAGER_COUNT）" >&2
+  echo "Error: 指挥部启动的 Manager 数量不符（${#MANAGER_ACTUAL_NAMES[@]}/${ACTUAL_MANAGER_COUNT}）" >&2
   exit 1
 fi
 MANAGER_DBZ_MAP="${manager_manifest}.dbz-names"
-echo "✓ ${#MANAGER_ACTUAL_NAMES[@]} 个 Manager 已并列进入指挥部 Tab（$HQ_LABEL），manifest: $manager_manifest"
+echo "✓ ${#MANAGER_ACTUAL_NAMES[@]} 个 Manager 已并列进入指挥部 Tab（${HQ_LABEL}），manifest: $manager_manifest"
 
 # ============================================================================
 # 阶段 5：派发任务给 Manager
@@ -510,7 +510,7 @@ MANIFEST_COUNT=${#MANAGER_ACTUAL_NAMES[@]}
 PLANNED_COUNT=${#MANAGER_SLUGS[@]}
 MODULE_COUNT=${#MODULE_SLUGS[@]}
 if (( MANIFEST_COUNT != PLANNED_COUNT || MODULE_COUNT != PLANNED_COUNT )); then
-  echo "Error: Manager 索引不一致（manifest=$MANIFEST_COUNT planned=$PLANNED_COUNT modules=$MODULE_COUNT）" >&2
+  echo "Error: Manager 索引不一致（manifest=$MANIFEST_COUNT planned=$PLANNED_COUNT modules=${MODULE_COUNT}）" >&2
   exit 1
 fi
 
@@ -680,7 +680,7 @@ fi
   echo "一线主 Agent: $MAIN_AGENT_NAME"
   echo "开始时间: $(date -r "$TIMESTAMP" '+%Y-%m-%d %H:%M:%S')"
   echo "完成时间: $(date '+%Y-%m-%d %H:%M:%S')"
-  echo "Loop 轮询: $LOOP_COUNT 轮（上限 $MAX_LOOPS）"
+  echo "Loop 轮询: $LOOP_COUNT 轮（上限 ${MAX_LOOPS}）"
   echo "最后状态: ${LAST_STATUS:-无记录}"
   echo "报告覆盖: ${REPORT_FOUND}/${REPORT_TOTAL}"
   echo
@@ -763,7 +763,7 @@ if [[ -n "$VERIFY_CMD" ]]; then
     echo '```'
   } >> "$FINAL_REPORT"
   if (( VERIFY_RC != 0 )); then
-    echo "⚠️  验收命令失败（exit $VERIFY_RC），完整输出已写入报告" >&2
+    echo "⚠️  验收命令失败（exit ${VERIFY_RC}），完整输出已写入报告" >&2
   fi
 fi
 
@@ -816,7 +816,7 @@ kaio_write_gap_file() { # <轮次> <输出文件>
     echo "任务: $REQUEST"
     echo "需求规格: $SPEC_PATH"
     echo
-    echo "上一轮质量门: $GATE（报告覆盖 ${REPORT_FOUND}/${REPORT_TOTAL}，覆盖率 ${COVERAGE}，阈值 ${QUALITY_THRESHOLD}）"
+    echo "上一轮质量门: ${GATE}（报告覆盖 ${REPORT_FOUND}/${REPORT_TOTAL}，覆盖率 ${COVERAGE}，阈值 ${QUALITY_THRESHOLD}）"
     echo "上一轮验收: $VERIFY_RESULT"
     echo
     echo "## 必须补齐的缺口"
@@ -835,7 +835,7 @@ kaio_write_gap_file() { # <轮次> <输出文件>
     echo
     echo "## 你要做的事"
     echo
-    echo "1. 先读 $SPEC_PATH，确认自己模块的验收标准"
+    echo "1. 先读 ${SPEC_PATH}，确认自己模块的验收标准"
     echo "2. 只看与自己模块相关的缺口，不要重写已完成的部分"
     echo "3. 缺什么补什么，补完在 \$TASK_DIR 写 <你的 agent 名>-report.md"
     echo "4. 不要 commit，不要改本模块 write scope 以外的文件"
