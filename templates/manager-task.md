@@ -47,6 +47,7 @@ WORKER_CSV="$(printf '%s\n' "$WORKER_SLUGS" | paste -sd, -)"
 bash {{SKILL_DIR}}/scripts/fanout.sh \
   --count "$(printf '%s\n' "$WORKER_SLUGS" | grep -c .)" \
   --work "Worker圈" \
+  --label "{{MANAGER_NAME}} · {{MODULE_NAME}}" \
   --dbz-tier worker \
   --dbz-owner "{{MANAGER_SLUG}}" \
   --dbz-parent "{{MANAGER_SLUG}}" \
@@ -60,6 +61,10 @@ bash {{SKILL_DIR}}/scripts/fanout.sh \
 
 `--tasks-dir` 用绝对路径 `{{TASK_DIR}}`，这样无论 Manager 从哪个目录执行，
 任务文件和 manifest 都落在同一个羊圈里。
+
+`--label` 让你的 Worker 圈 tab 直接标成「{{MANAGER_NAME}} · {{MODULE_NAME}}」：
+tab 列表和 agents 列表里，谁是哪个 Manager 的兵、在干什么活一眼可对应，
+不用再点开每个圈猜。
 
 **重要**：
 - `--workspace` 必须是你当前的 workspace（固定用 `$HERDR_WORKSPACE_ID`）
@@ -77,7 +82,13 @@ bash {{SKILL_DIR}}/scripts/fanout.sh \
 读取每个 Worker 的任务文件，派发给对应的 Worker。Worker 会在自己的 Worker 圈 Tab 里独立工作。
 
 ### 第五步：收割 Worker 结果
-当所有 Worker 完成后，用 harvest.sh 收割他们的结果（但不关闭 pane，让他们保留在 Tab 内待审）。
+等 Worker 干完再收。**wait 必须多条件**（重复 `--until` 是「任一命中即返回」）：claude/opencode 干完活停在 `idle` 而不是 `done`，只等 `done` 会白等满超时——这是监控不及时的头号原因：
+
+```bash
+herdr agent wait <worker> --until idle --until done --until blocked --timeout 1800000
+```
+
+全部停下后，用 harvest.sh 收割他们的结果（但不关闭 pane，让他们保留在 Tab 内待审）。
 
 ### 第六步：质量检查
 - 检查每个 Worker 是否按要求完成

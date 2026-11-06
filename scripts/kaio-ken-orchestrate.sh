@@ -43,6 +43,67 @@ kaio_truncate_text() {
   return 0
 }
 
+# 一线主角也要在 workspace 列表里认得出来：编排启动时把主角所在的当前
+# workspace 改名为「<主角> · <工作名>」（如「孙悟空 · 重构支付模块」），与
+# 子 workspace「<主角>的界王拳 · <工作名>」成对——主角圈不带「的界王拳」
+# 后缀，侧栏一眼可分谁是本尊、哪圈是兵。原标签落盘到任务目录
+# .origin-workspace，脚本退出（成功/失败/用户中止）时经 EXIT trap 自动恢复。
+# 口径与 fanout.sh 的 controller rename 一致：
+#   - 不在 herdr pane 内（无 HERDR_WORKSPACE_ID）只提示、不报错；
+#   - 标签里已带「界王拳」（嵌套界王拳：主角在别人的界王拳圈里再开界王拳）
+#     不再改，绝不覆盖子 workspace 的标签；
+#   - 改名失败只警告，绝不阻断编排。
+KAIO_WS_MARKED=0
+KAIO_WS_ORIG_LABEL=""
+KAIO_WS_META=""
+kaio_mark_origin_workspace() { # <task_dir> <主角名> <工作名>
+  local task_dir="$1" hero="$2" work="$3" orig=""
+  if [[ -z "${HERDR_WORKSPACE_ID:-}" ]]; then
+    echo "  note: 不在 herdr pane 内（无 HERDR_WORKSPACE_ID），跳过主角 workspace 改名" >&2
+    return 0
+  fi
+  orig="$(herdr workspace get "$HERDR_WORKSPACE_ID" 2>/dev/null \
+    | jq -r '.result.workspace.label // empty' 2>/dev/null || true)"
+  if [[ -z "$orig" || "$orig" == "null" ]]; then
+    echo "  warn: 读不到当前 workspace（${HERDR_WORKSPACE_ID}）标签，跳过改名" >&2
+    return 0
+  fi
+  case "$orig" in
+    *界王拳*)
+      echo "  note: 当前 workspace 已是界王拳标签（${orig}），无需改名" >&2
+      return 0
+      ;;
+  esac
+  if herdr workspace rename "$HERDR_WORKSPACE_ID" "${hero} · ${work}" >/dev/null 2>&1; then
+    KAIO_WS_MARKED=1
+    KAIO_WS_ORIG_LABEL="$orig"
+    KAIO_WS_META="$task_dir/.origin-workspace"
+    {
+      echo "#origin_workspace_id=${HERDR_WORKSPACE_ID}"
+      echo "#origin_workspace_label=${orig}"
+    } > "$KAIO_WS_META"
+    echo "✓ 主角 workspace 已改名: ${hero} · ${work}（原名记录在 ${KAIO_WS_META}，结束时自动恢复）"
+  else
+    echo "  warn: 当前 workspace（${HERDR_WORKSPACE_ID}）改名失败，继续编排" >&2
+  fi
+  return 0
+}
+
+kaio_restore_origin_workspace() {
+  if (( KAIO_WS_MARKED != 1 )); then
+    return 0
+  fi
+  if herdr workspace rename "$HERDR_WORKSPACE_ID" "$KAIO_WS_ORIG_LABEL" >/dev/null 2>&1; then
+    echo "  已恢复主角 workspace 原标签: ${KAIO_WS_ORIG_LABEL}" >&2
+  else
+    echo "  warn: 主角 workspace 原标签恢复失败（记录在 ${KAIO_WS_META}）" >&2
+  fi
+  return 0
+}
+
+# 退出时无条件尝试恢复：成功、失败、确认点中止都走这里，不依赖各中止点手工调用。
+trap kaio_restore_origin_workspace EXIT
+
 
 usage() {
   cat <<'EOF'
@@ -251,7 +312,8 @@ fi
 
 
 # ============================================================================
-MAIN_AGENT_NAME="$(get_main_agent_name)"
+# 主角名只在开头抽取一次（get_main_agent_name 是随机抽卡）：这里二次抽取会让
+# 开头打印的主角和实际写进 workspace/指挥部标签的主角不是同一个人。
 MAIN_AGENT_SLUG="$(dbz_agent_slug "$MAIN_AGENT_NAME" 2>/dev/null || printf '%s' "$MAIN_AGENT_NAME")"
 
 # 分解库先加载：类型识别既是 SPEC 的推断依据，也是阶段 2 的骨架。
@@ -259,6 +321,9 @@ source "$SKILL_DIR/lib/decompose.sh"
 source "$SKILL_DIR/lib/spec.sh"
 
 WORK_NAME="$(kaio_truncate_text "$REQUEST" 20)…"  # 按字符截取前 20 个字符作为工作名
+# 主角所在的当前 workspace 先改名再进入分解：侧栏里与稍后创建的子
+# workspace「<主角>的界王拳 · <工作名>」成对，一眼可分本尊在哪。
+kaio_mark_origin_workspace "$TASK_DIR" "$MAIN_AGENT_NAME" "$WORK_NAME"
 # `git rev-parse HEAD || echo unknown` 在空仓库里会先打印 "HEAD" 再拼接
 # "unknown"，报告里就变成两行；分开取值才能只拿到一个值。
 BASE_COMMIT="$(cd "$CWD" && git rev-parse HEAD 2>/dev/null || true)"
@@ -312,6 +377,7 @@ if ! confirm_decision "确认任务分解（${TASK_TYPE}，$ACTUAL_MANAGER_COUNT
     "$REQUEST" "$TASK_TYPE" "$MAX_MANAGERS" "$MAX_WORKERS_PER_MANAGER" \
     "$(echo "$MANAGER_TASKS" | nl -ba)")"; then
   echo "已按用户选择中止：未创建 workspace，未启动任何 agent。" >&2
+  # 主角 workspace 原标签由 EXIT trap 统一恢复，这里不用手工调。
   exit 3
 fi
 echo ""
@@ -406,6 +472,7 @@ while IFS='|' read -r module_name module_slug task_scope dependencies; do
   sed \
     -e "s|{{MANAGER_NAME}}|$manager_name|g" \
     -e "s|{{MANAGER_SLUG}}|$manager_slug|g" \
+    -e "s|{{MODULE_NAME}}|$module_name|g" \
     -e "s|{{CWD}}|$CWD|g" \
     -e "s|{{BASE_COMMIT}}|$BASE_COMMIT|g" \
     -e "s|{{SKILL_DIR}}|$SKILL_DIR|g" \
@@ -439,6 +506,7 @@ if ! confirm_decision "启动 $ACTUAL_MANAGER_COUNT 个 Manager（每人不超 $
     "$WORKSPACE_ID" "$TASK_DIR" "${MANAGER_NAMES[*]:-无}")"; then
   echo "已按用户选择中止：workspace $WORKSPACE_ID 已创建但未启动任何 agent。" >&2
   echo "如需清理：herdr workspace delete $WORKSPACE_ID" >&2
+  # 主角 workspace 原标签由 EXIT trap 统一恢复，这里不用手工调。
   exit 3
 fi
 

@@ -65,6 +65,18 @@
 #   T39 no file under scripts/ or lib/ leaves $IDENT directly followed by a
 #       non-ASCII byte: bash 3.2 glues the continuation bytes into the variable
 #       name and dies with "<VAR><garbage>: unbound variable" under set -u
+#   T40 kaio-ken renames the hero's OWN workspace (not the tab) to
+#       “<主角> · <work>” at startup, persists the original label
+#       in .origin-workspace, restores it via the EXIT trap on abort, stays
+#       idempotent on kaio-ken labels (nested guard), survives rename
+#       failures, and skips silently outside a herdr pane
+#   T41 manager task sheets pin --label “<Manager> · <模块名>” so every
+#       worker pen tab names its manager and the module work — the pen is
+#       identifiable from the tab/agents list without opening it
+#   T42 no doc may teach single-condition `wait --until done`: claude agents
+#       settle on `idle` after finishing (verified live on w1C), so a done-only
+#       wait stalls until timeout — the root cause of “监控不及时唤起”;
+#       the manager sheet must teach idle+done+blocked multi-state waits
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -191,6 +203,22 @@ PY
     ;;
   "workspace create")
     echo '{"result":{"workspace":{"workspace_id":"wRANCH"},"tab":{"tab_id":"wRANCH:t0"},"root_pane":{"pane_id":"wRANCH:p0"}}}'
+    ;;
+  "workspace get")
+    # The origin workspace's current label, as a JSON string; kaio-ken uses
+    # this both to snapshot the original label and to probe idempotency.
+    if [ -f "$TEST_DIR/ws_label" ]; then
+      echo "{\"result\":{\"workspace\":{\"workspace_id\":\"$3\",\"label\":$(cat "$TEST_DIR/ws_label")}}}"
+    else
+      echo "{\"result\":{\"workspace\":{\"workspace_id\":\"$3\",\"label\":\"1\"}}}"
+    fi
+    ;;
+  "workspace rename")
+    [ -f "$TEST_DIR/ws_rename_fails" ] && exit 1
+    # Persist the new label so a follow-up `workspace get` sees the rename.
+    shift 3
+    printf '"%s"\n' "$*" > "$TEST_DIR/ws_label"
+    exit 0
     ;;
   "status server")
     [ -f "$TEST_DIR/server_up" ] && exit 0
@@ -1055,6 +1083,101 @@ then
 else
   fail "bash 3.2 multibyte adjacency regression found (see listing above)"
 fi
+
+echo "== T40: 界王拳主角 workspace 改名（标记/恢复/幂等/失败降级/无 pane）=="
+# 编排启动时把主角所在的当前 workspace 改名为「<主角>本尊 · 界王拳 · <工作名>」，
+# 原标签落盘 .origin-workspace，EXIT trap 兜底恢复。主角名是随机抽卡，
+# 断言按标签模式而不是具体人名。
+printf '"origin-ws"\n' > "$TEST_DIR/ws_label"
+WS40="$TEST_DIR/kaio40"
+mkdir -p "$WS40"
+: > "$LOG"
+if HERDR_WORKSPACE_ID=w0 KAIO_KEN_CONFIRM_ANSWERS=n bash "$KAIO" \
+  --request "开发一个全栈应用" --max-managers 2 --auto-mode 0 \
+  --cwd "$WS40" < /dev/null > "$TEST_DIR/t40-out.txt" 2>&1; then
+  fail "preset 'n' should abort the T40 run"
+else
+  [ "$?" -eq 3 ] && pass "T40 abort still exits 3" || fail "T40 abort wrong exit code"
+fi
+assert_contains "queries origin workspace label" "$LOG" "workspace get w0"
+assert_contains "renames to <hero> · <work> pairing" "$LOG" " · 开发一个全栈应用"
+assert_contains "EXIT trap restores original label" "$LOG" "workspace rename w0 origin-ws"
+T40_TASK_DIR="$(ls -d "$WS40"/.fangyang/kaio-ken-* 2>/dev/null | head -n 1)"
+assert_contains "origin metadata persisted" \
+  "$T40_TASK_DIR/.origin-workspace" "#origin_workspace_label=origin-ws"
+T40_RENAMES="$(grep -c '^workspace rename w0 ' "$LOG" 2>/dev/null || true)"
+[ "${T40_RENAMES:-0}" -eq 2 ] && pass "mark + restore rename exactly twice" \
+  || fail "expected 2 workspace renames, got ${T40_RENAMES:-0}"
+
+# 幂等：当前 workspace 标签已带「界王拳」（嵌套/上次未恢复）时不再改。
+WS40B="$TEST_DIR/kaio40b"
+mkdir -p "$WS40B"
+printf '"孙悟空的界王拳 · 旧活"\n' > "$TEST_DIR/ws_label"
+: > "$LOG"
+HERDR_WORKSPACE_ID=w0 KAIO_KEN_CONFIRM_ANSWERS=n bash "$KAIO" \
+  --request "开发一个全栈应用" --max-managers 2 --auto-mode 0 \
+  --cwd "$WS40B" < /dev/null > "$TEST_DIR/t40b-out.txt" 2>&1 || true
+assert_contains "idempotent skip is explained" "$TEST_DIR/t40b-out.txt" "无需改名"
+assert_not_contains "no rename on existing kaio-ken label" "$LOG" "workspace rename"
+
+# 改名失败只警告，不阻断：仍走到第一个确认点正常中止。
+WS40C="$TEST_DIR/kaio40c"
+mkdir -p "$WS40C"
+printf '"origin-ws"\n' > "$TEST_DIR/ws_label"
+touch "$TEST_DIR/ws_rename_fails"
+: > "$LOG"
+if HERDR_WORKSPACE_ID=w0 KAIO_KEN_CONFIRM_ANSWERS=n bash "$KAIO" \
+  --request "开发一个全栈应用" --max-managers 2 --auto-mode 0 \
+  --cwd "$WS40C" < /dev/null > "$TEST_DIR/t40c-out.txt" 2>&1; then
+  fail "T40c should still abort at the breakdown gate"
+else
+  [ "$?" -eq 3 ] && pass "rename failure does not block orchestration" \
+    || fail "T40c wrong exit code"
+fi
+assert_contains "rename failure is only a warning" "$TEST_DIR/t40c-out.txt" "改名失败"
+rm -f "$TEST_DIR/ws_rename_fails"
+
+# 外部 shell（无 HERDR_WORKSPACE_ID）：只提示、不查询、不改名。
+WS40D="$TEST_DIR/kaio40d"
+mkdir -p "$WS40D"
+: > "$LOG"
+# 台架全局 export 了 HERDR_WORKSPACE_ID=wT（模拟 pane 内），这里显式剥掉模拟外部 shell。
+env -u HERDR_WORKSPACE_ID KAIO_KEN_CONFIRM_ANSWERS=n bash "$KAIO" --request "开发一个全栈应用" \
+  --max-managers 2 --auto-mode 0 --cwd "$WS40D" < /dev/null \
+  > "$TEST_DIR/t40d-out.txt" 2>&1 || true
+assert_contains "skip note outside a herdr pane" "$TEST_DIR/t40d-out.txt" "跳过主角 workspace 改名"
+assert_not_contains "no workspace probe without pane" "$LOG" "workspace get"
+
+echo "== T41: Worker 圈标签写「<Manager> · <模块>」，不点圈可对应 =="
+# 回归点：Worker 圈 tab 原来走 dbz 父子链自动标签（<主角>·<经理>的界王拳 · Worker圈），
+# 全是「界王拳」字样，分不清哪个圈是谁的。模板和生成后的任务书都必须固定
+# --label "<Manager名> · <模块名>"，与主角 workspace「<主角> · <工作名>」同名系。
+assert_contains "template pins pen label" \
+  "$REPO_DIR/templates/manager-task.md" '--label "{{MANAGER_NAME}} · {{MODULE_NAME}}"'
+assert_contains "orchestrator fills the module placeholder" \
+  "$REPO_DIR/scripts/kaio-ken-orchestrate.sh" 's|{{MODULE_NAME}}|$module_name|g'
+# T24 全流程生成的任务书：占位符已被替换成「<角色名> · 前端模块/后端模块」。
+T24_TASK_FILE="$(ls "$T24_TASK_DIR"/*-task.md 2>/dev/null | head -n 1)"
+assert_contains "generated sheet keeps an explicit pen label" "$T24_TASK_FILE" '--label "'
+T41_PENS="$(grep -h -- '--label "' "$T24_TASK_DIR"/*-task.md 2>/dev/null \
+  | sed 's/.*--label "//;s/".*//' | sort -u)"
+echo "$T41_PENS" | grep -q ' · 前端模块$' && pass "front-end pen labeled 「X · 前端模块」" \
+  || fail "front-end pen label missing, got: $(echo "$T41_PENS" | tr '\n' '|')"
+echo "$T41_PENS" | grep -q ' · 后端模块$' && pass "back-end pen labeled 「X · 后端模块」" \
+  || fail "back-end pen label missing, got: $(echo "$T41_PENS" | tr '\n' '|')"
+
+echo "== T42: 监控等待必须多条件（claude 干完停在 idle，不是 done）=="
+# 回归点（2026-11-06 实测 w1C）：Manager/Worker 完成后 agent_status 停在 idle
+# （completion_seq 有值），只有少数停在 done。主控照「wait --until done」单条件
+# 挂监控会白等满超时——「监控总是不及时唤起」的根因。herdr wait 的重复
+# --until 是任一命中即返回，必须 idle+done+blocked 三条件。
+if grep -Eq 'wait [^ ]+ --until done --timeout' "$REPO_DIR/SKILL.md"; then
+  fail "SKILL.md still teaches single-condition --until done waits (monitor stalls until timeout)"
+else
+  pass "no single-condition done-only waits in SKILL.md"
+fi
+assert_contains "manager sheet teaches multi-state wait" \
+  "$REPO_DIR/templates/manager-task.md" "--until idle --until done --until blocked"
 
 rm -f "$TEST_DIR/track_agents" "$TEST_DIR/write_reports"
 echo

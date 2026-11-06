@@ -102,6 +102,8 @@ rm -rf /tmp/fangyang-le
 
 1. 建专属 workspace（不碰主控原有工作区）：
    `herdr workspace create --label "<主控角色名>的界王拳 · <工作名>" --cwd "$PWD" --no-focus`
+   并把自己的 workspace 改名配对（`<主角> · <工作名>`，与子 workspace「<主角>的界王拳 · <工作名>」成对——谁是本尊、哪圈是兵一眼可分；记下原标签，收尾后改回）：
+   `herdr workspace rename "$HERDR_WORKSPACE_ID" "<主控角色名> · <工作名>"`
 2. 建任务目录 `.fangyang/kaio-ken-<ts>/`，把 SPEC 固化成 `SPEC.md`，决策写入 `.decisions.log`
 3. 领角色：`dbz-roster.sh --count N --tier manager|worker --used-from "$TASK_DIR"`
 4. **一次 fanout 把全部 Manager 并列进「指挥部」tab**（网格布局）：
@@ -113,8 +115,8 @@ rm -rf /tmp/fangyang-le
      --workspace "$HERDR_WORKSPACE_ID" --cwd "$PWD" \
      --tasks-dir "$TASK_DIR" --no-controller-rename
    ```
-5. 照 `templates/manager-task.md` 给每个 Manager 写任务书（Worker fanout 命令已内嵌：独立 Worker 圈 tab + 绝对 cwd），`herdr agent prompt` 逐个派发
-6. 监控 → 收割 → 质量门（报告覆盖率 + `--verify`）→ 不达标按 Goal 纪律写缺口任务书返工，决策全留 `.decisions.log`
+5. 照 `templates/manager-task.md` 给每个 Manager 写任务书（Worker fanout 命令已内嵌：独立 Worker 圈 tab，`--label` 固定标「<Manager> · <模块>」+ 绝对 cwd），`herdr agent prompt` 逐个派发
+6. 监控（`herdr agent wait <名> --until idle --until done --until blocked --timeout 1800000`，任一命中即醒；**不要只等 `done`**——claude 干完活停在 `idle`，单条件会白等满超时）→ 收割 → 质量门（报告覆盖率 + `--verify`）→ 不达标按 Goal 纪律写缺口任务书返工，决策全留 `.decisions.log`
 
 **第二步（备选）：脚本一键无人值守**。需求天然能按通用模板分解（如标准全栈「前端/后端/DB/文档」四模块）、且想无人值守跑时用 orchestrator：
 
@@ -129,7 +131,7 @@ rm -rf /tmp/fangyang-le
   --cwd "$PWD"
 ```
 
-脚本会：建**专属 workspace**（`界王拳 · <任务名>`，不碰主控原有工作区）→ 固化 SPEC → 按通用模板分解 Manager 任务 → 一次 fanout 把全部 Manager 并列进指挥部 tab → 派发任务 → Loop 监控 → 收割 + 跑 `--verify` → 质量门不通过则自动返工。分解贴合度存疑时优先手工编排。
+脚本会：先把主控自己的 workspace 改名成「<主角> · <工作名>」（原标签落盘 `.origin-workspace`，退出时自动恢复）→ 建**专属 workspace**（`界王拳 · <任务名>`，不碰主控原有工作区）→ 固化 SPEC → 按通用模板分解 Manager 任务（任务书里 Worker 圈固定 `--label "<Manager> · <模块>"`）→ 一次 fanout 把全部 Manager 并列进指挥部 tab → 派发任务 → Loop 监控 → 收割 + 跑 `--verify` → 质量门不通过则自动返工。分解贴合度存疑时优先手工编排。
 
 常用参数：
 
@@ -478,7 +480,8 @@ herdr pane list --workspace "$HERDR_WORKSPACE_ID"
 
 ```bash
 herdr agent prompt worker-a "..."
-herdr agent wait worker-a --until done --timeout 1800000
+# 多条件任一命中即返回：claude/opencode 干完停在 idle，只等 done 会白等满超时
+herdr agent wait worker-a --until idle --until done --until blocked --timeout 1800000
 herdr agent read worker-a --lines 160
 ```
 
@@ -684,12 +687,12 @@ git commit -m "<type>(<scope>): <summary>"
 
 - `scripts/fanout.sh`：创建 tab、网格 pane、启动 N 个 agent；同步把主控 tab 改名 `<owner> · <work>`；在 herdr pane 外执行时自动 bootstrap（装 herdr、起 headless server、建专属牧场 workspace），`--no-bootstrap` 可关闭
 - `scripts/ensure-herdr.sh`：确保 herdr CLI 与 headless `herdr server` 可用（已有则复用、缺失则安装/拉起），幂等；供 fanout.sh 外部模式调用，也可单独执行
-- `scripts/kaio-ken-orchestrate.sh`：界王拳三层编排**自动化备选**（主路径是主控手工编排，见「怎么开」）——建专属 workspace、固化 SPEC（`--spec` 或推断草稿）、按通用模板分解 Manager 任务、一次 fanout 把全部 Manager 并列进指挥部 tab、派发、Loop 监控、收割 + `--verify` 质量门、Goal 模式自动返工，最后聚合报告
+- `scripts/kaio-ken-orchestrate.sh`：界王拳三层编排**自动化备选**（主路径是主控手工编排，见「怎么开」）——启动即把主控 workspace 改名「<主角> · <工作名>」（原标签存 `.origin-workspace`、EXIT 自动恢复、已带界王拳标签则跳过防嵌套覆盖）、建专属 workspace、固化 SPEC（`--spec` 或推断草稿）、按通用模板分解 Manager 任务、一次 fanout 把全部 Manager 并列进指挥部 tab、派发、Loop 监控、收割 + `--verify` 质量门、Goal 模式自动返工，最后聚合报告
 - `scripts/dbz-roster.sh`：按一线/二线/三线领不重复的七龙珠角色 slug（`--count --tier --used-from --exclude --explain`）
 - `lib/spec.sh`：需求规格推断与提问清单（`SPEC_QUESTIONS.md`）、Goal 质量门判据
 - `lib/decompose.sh`：按任务类型（code/report/design/mixed）给出 Manager 分片建议
 - `lib/dbz-characters.sh`：三线七龙珠角色名池（主控/Manager/Worker 命名，含去重）
-- `templates/manager-task.md`：Manager 任务模板（七个步骤，Worker 用 fanout.sh 开**独立 Worker 圈 tab**，`--cwd` 用绝对路径）
+- `templates/manager-task.md`：Manager 任务模板（七个步骤，Worker 用 fanout.sh 开**独立 Worker 圈 tab** 并固定 `--label "<Manager> · <模块>"`，`--cwd` 用绝对路径）
 - `templates/worker-task.md`：Worker 任务模板（write scope / 验收 / 越界自查）
 - `tests/run-tests.sh`：离线 stub 测试（伪 herdr CLI），覆盖 fanout/harvest 的主控 tab 配对行为
 - `install.sh`：安装到 `~/.agents/skills/fangyang-le` 并链接到 agent skill 目录
